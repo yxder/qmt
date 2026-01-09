@@ -491,16 +491,61 @@ class DataFetcher:
                         # 竞价涨幅
                         processed_df['bid_change'] = (processed_df['open'] - processed_df['pre_close']) / processed_df['pre_close']
                         
-                        # 竞价强度（涨幅的绝对值）
-                        processed_df['bid_intensity'] = abs(processed_df['bid_change'])
+                        # 竞价强度（考虑涨跌方向的强度）
+                        processed_df['bid_intensity'] = processed_df['bid_change']
+                        
+                        # 竞价强度绝对值
+                        processed_df['bid_intensity_abs'] = abs(processed_df['bid_change'])
+                        
+                        # 涨停可能性初步判断
+                        processed_df['is_near_limit_up'] = processed_df['bid_change'] >= 0.08
                     
-                    # 计算竞价量比（假设昨日成交量为平均成交量）
-                    if 'volume' in processed_df.columns:
-                        # 简单处理：使用成交量作为竞价量，实际应用中应使用昨日成交量计算量比
-                        processed_df['bid_volume_ratio'] = processed_df['volume'] / 1000000  # 简化处理，实际应基于昨日成交量
+                    # 计算竞价成交量
+                    processed_df['bid_volume'] = processed_df['volume']
+                    
+                    # 计算竞价金额
+                    processed_df['bid_amount'] = processed_df['amount']
+                    
+                    # 计算竞价换手率（假设流通股本为1亿，实际应从基本面数据获取）
+                    # 这里使用简化计算，实际应用中应替换为真实流通股本
+                    estimated_circulating_shares = 100000000  # 假设1亿流通股
+                    processed_df['bid_turnover_rate'] = processed_df['bid_volume'] / estimated_circulating_shares
+                    
+                    # 计算封单金额（基于竞价金额估算）
+                    processed_df['bid_order_amount'] = processed_df['bid_amount'] * 1.2  # 简化估算，实际应根据盘口数据计算
+                    
+                    # 计算封单比例（封单金额/流通市值）
+                    # 假设流通市值为100亿，实际应从基本面数据获取
+                    estimated_market_cap = 10000000000  # 假设100亿流通市值
+                    processed_df['bid_order_ratio'] = processed_df['bid_order_amount'] / estimated_market_cap
+                    
+                    # 处理1分钟竞价数据，提取9:25的最终竞价数据
+                    if isinstance(stock_bid_data, pd.DataFrame) and not stock_bid_data.empty:
+                        # 按时间排序
+                        stock_bid_data = stock_bid_data.sort_index()
+                        
+                        # 获取9:25的竞价数据
+                        bid_925 = stock_bid_data.loc[stock_bid_data.index.hour == 9]
+                        bid_925 = bid_925.loc[bid_925.index.minute == 25]
+                        
+                        if not bid_925.empty:
+                            # 添加9:25竞价数据到结果中
+                            processed_df['bid_925_close'] = bid_925['close'].values[0]
+                            processed_df['bid_925_volume'] = bid_925['volume'].values[0]
+                            processed_df['bid_925_amount'] = bid_925['amount'].values[0]
+                            
+                            # 计算竞价过程中的价格变化
+                            if 'pre_close' in processed_df.columns:
+                                processed_df['bid_price_change'] = (bid_925['close'].values[0] - processed_df['pre_close']) / processed_df['pre_close']
+                    
+                    # 计算竞价量比（使用简化计算，实际应基于昨日成交量）
+                    processed_df['bid_volume_ratio'] = processed_df['bid_volume'] / (1000000 * 0.5)  # 假设昨日平均每分钟成交量为50万股
                     
                     # 添加竞价结束时间
                     processed_df['bid_end_time'] = pd.Timestamp('{} 09:26:00'.format(date))
+                    
+                    # 添加竞价开始时间
+                    processed_df['bid_start_time'] = pd.Timestamp('{} 09:15:00'.format(date))
                     
                     # 添加到结果中
                     processed_bid_data[stock_code] = processed_df
@@ -514,7 +559,7 @@ class DataFetcher:
             logger.warning("未能处理集合竞价数据，返回原始数据")
             return bid_data
         
-        logger.info("集合竞价数据处理完成，共{}只股票".format(len(processed_bid_data)))
+        logger.info("集合竞价数据处理完成，共{}只股票，包含竞价强度、封单金额等增强指标".format(len(processed_bid_data)))
         return processed_bid_data
     
     def get_market_sentiment_data(self, date):

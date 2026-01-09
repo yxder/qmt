@@ -83,7 +83,13 @@ class StockFilter:
             
             # 新股过滤
             'exclude_new_stocks': True,  # 排除新股（上市不满30天）
-            'new_stock_days': 30  # 新股定义天数
+            'new_stock_days': 30,  # 新股定义天数
+            
+            # 热门板块二次筛选配置
+            'hot_sector_top_n': 20,  # 每个热门板块保留的股票数量
+            'bid_change_threshold': 0.01,  # 竞价涨幅阈值，低于此值的股票不考虑
+            'bid_volume_ratio_threshold': 0.5,  # 竞价量比阈值，低于此值的股票不考虑
+            'bid_intensity_threshold': 0.02,  # 竞价强度阈值，低于此值的股票不考虑
         }
         
         config = config or default_config
@@ -134,8 +140,8 @@ class StockFilter:
                     original_count = len(filtered_stocks)
                 
                 # 成交额过滤
-                if 'turnover' in filtered_stocks.columns:
-                    filtered_stocks = filtered_stocks[filtered_stocks['turnover'] >= config['min_turnover']]
+                if 'amount' in filtered_stocks.columns:
+                    filtered_stocks = filtered_stocks[filtered_stocks['amount'] >= config['min_turnover']]
                     self.filter_stats['low_turnover_excluded'] = original_count - len(filtered_stocks)
                     original_count = len(filtered_stocks)
             
@@ -157,10 +163,10 @@ class StockFilter:
             
             # 6. 涨跌幅过滤
             if isinstance(filtered_stocks, pd.DataFrame):
-                if 'bid_price_change' in filtered_stocks.columns:
+                if 'bid_change' in filtered_stocks.columns:
                     filtered_stocks = filtered_stocks[
-                        (filtered_stocks['bid_price_change'] >= config['min_bid_change']) & 
-                        (filtered_stocks['bid_price_change'] <= config['max_bid_change'])
+                        (filtered_stocks['bid_change'] >= config['min_bid_change']) & 
+                        (filtered_stocks['bid_change'] <= config['max_bid_change'])
                     ]
                     self.filter_stats['bid_change_filtered'] = original_count - len(filtered_stocks)
                     original_count = len(filtered_stocks)
@@ -174,6 +180,84 @@ class StockFilter:
                         filtered_stocks = filtered_stocks[filtered_stocks['list_days'] >= config['new_stock_days']]
                         self.filter_stats['new_stocks_excluded'] = original_count - len(filtered_stocks)
                         original_count = len(filtered_stocks)
+            
+            # 8. 热门板块二次筛选（仅当有目标板块时执行）
+            if isinstance(filtered_stocks, pd.DataFrame) and target_sectors and len(target_sectors) > 0:
+                logger.info("对热门板块股票进行二次筛选")
+                
+                # 添加行业信息
+                filtered_stocks['sector'] = filtered_stocks['stock_code'].apply(self.sector_analyzer.get_stock_sector)
+                
+                # 计算股票在板块内的综合评分
+                filtered_stocks['sector_rank_score'] = 0
+                
+                # 1. 竞价涨幅评分（权重40%）
+                if 'bid_change' in filtered_stocks.columns:
+                    # 标准化竞价涨幅
+                    max_bid_change = filtered_stocks['bid_change'].max()
+                    min_bid_change = filtered_stocks['bid_change'].min()
+                    if max_bid_change > min_bid_change:
+                        filtered_stocks['norm_bid_change'] = (filtered_stocks['bid_change'] - min_bid_change) / (max_bid_change - min_bid_change)
+                        filtered_stocks['sector_rank_score'] += filtered_stocks['norm_bid_change'] * 40
+                
+                # 2. 竞价量比评分（权重25%）
+                if 'bid_volume_ratio' in filtered_stocks.columns:
+                    # 标准化竞价量比
+                    max_ratio = filtered_stocks['bid_volume_ratio'].max()
+                    min_ratio = filtered_stocks['bid_volume_ratio'].min()
+                    if max_ratio > min_ratio:
+                        filtered_stocks['norm_bid_volume_ratio'] = (filtered_stocks['bid_volume_ratio'] - min_ratio) / (max_ratio - min_ratio)
+                        filtered_stocks['sector_rank_score'] += filtered_stocks['norm_bid_volume_ratio'] * 25
+                
+                # 3. 竞价强度评分（权重20%）
+                if 'bid_intensity' in filtered_stocks.columns:
+                    # 标准化竞价强度
+                    max_intensity = filtered_stocks['bid_intensity'].max()
+                    min_intensity = filtered_stocks['bid_intensity'].min()
+                    if max_intensity > min_intensity:
+                        filtered_stocks['norm_bid_intensity'] = (filtered_stocks['bid_intensity'] - min_intensity) / (max_intensity - min_intensity)
+                        filtered_stocks['sector_rank_score'] += filtered_stocks['norm_bid_intensity'] * 20
+                
+                # 4. 封单比例评分（权重15%）
+                if 'bid_order_ratio' in filtered_stocks.columns:
+                    # 标准化封单比例
+                    max_order_ratio = filtered_stocks['bid_order_ratio'].max()
+                    min_order_ratio = filtered_stocks['bid_order_ratio'].min()
+                    if max_order_ratio > min_order_ratio:
+                        filtered_stocks['norm_bid_order_ratio'] = (filtered_stocks['bid_order_ratio'] - min_order_ratio) / (max_order_ratio - min_order_ratio)
+                        filtered_stocks['sector_rank_score'] += filtered_stocks['norm_bid_order_ratio'] * 15
+                
+                # 按板块分组，保留每个板块评分最高的N只股票
+                top_stocks = []
+                for sector in target_sectors:
+                    sector_stocks = filtered_stocks[filtered_stocks['sector'] == sector]
+                    if not sector_stocks.empty:
+                        # 按综合评分降序排序
+                        sector_stocks_sorted = sector_stocks.sort_values('sector_rank_score', ascending=False)
+                        # 保留前N只股票
+                        top_n = config.get('hot_sector_top_n', 20)
+                        top_stocks.append(sector_stocks_sorted.head(top_n))
+                
+                # 合并所有板块的Top股票
+                if top_stocks:
+                    filtered_stocks = pd.concat(top_stocks, ignore_index=True)
+                    self.filter_stats['hot_sector_filtered'] = original_count - len(filtered_stocks)
+                    original_count = len(filtered_stocks)
+                    logger.info(f"热门板块二次筛选完成，每个板块保留前{config.get('hot_sector_top_n', 20)}只股票，共保留{len(filtered_stocks)}只股票")
+            
+            # 9. 最终过滤：竞价涨幅和量比阈值过滤
+            if isinstance(filtered_stocks, pd.DataFrame):
+                # 竞价涨幅阈值过滤
+                if 'bid_change' in filtered_stocks.columns:
+                    filtered_stocks = filtered_stocks[filtered_stocks['bid_change'] >= config['bid_change_threshold']]
+                
+                # 竞价量比阈值过滤
+                if 'bid_volume_ratio' in filtered_stocks.columns:
+                    filtered_stocks = filtered_stocks[filtered_stocks['bid_volume_ratio'] >= config['bid_volume_ratio_threshold']]
+                
+                # 竞价强度阈值过滤
+                if 'bid_intensity' in filtered_stocks.columns:
+                    filtered_stocks = filtered_stocks[filtered_stocks['bid_intensity'] >= config['bid_intensity_threshold']]
             
             # 记录过滤后的股票数量
             self.filter_stats['filtered_count'] = len(filtered_stocks)

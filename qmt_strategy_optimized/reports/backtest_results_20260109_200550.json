@@ -1,0 +1,22 @@
+{
+    "total_return": 0.007020674466364784,
+    "annual_return": 0.07966780608003488,
+    "sharpe_ratio": 3.377673151606835,
+    "max_drawdown": -0.0021424143348852008,
+    "annual_volatility": 0.013538602553201674,
+    "calmar_ratio": 37.185993756106846,
+    "sortino_ratio": 8.471610767956154,
+    "win_rate": 0.4519230769230769,
+    "profit_loss_ratio": 1.631009258806096,
+    "trade_count": 104,
+    "profit_trades": 47,
+    "loss_trades": 57,
+    "break_even_trades": 0,
+    "total_pnl": 5768.033310730125,
+    "avg_pnl_per_trade": 55.46185875702043,
+    "max_consecutive_wins": 4,
+    "max_consecutive_losses": 5,
+    "avg_holding_days": 6.451923076923077,
+    "avg_daily_trades": 4.521739130434782,
+    "industry_analysis": {}
+}

@@ -35,15 +35,18 @@ class QMTStrategySystem:
         # 使用传入的配置或创建默认配置
         self.config = config if config is not None else StrategyConfig()
         
-        # 初始化各个模块
+        # 初始化各个模块，使用依赖注入模式
         self.data_fetcher = DataFetcher()
         self.data_processor = DataProcessor()
         self.feature_engineer = FeatureEngineer()
         self.model_trainer = ModelTrainer(model_path=self.config.model_path)
-        self.strategy_decision = StrategyDecision()
+        self.strategy_decision = StrategyDecision(strategy_config=self.config)
         self.order_executor = OrderExecutor()
-        self.risk_controller = RiskController(initial_capital=self.config.initial_capital)
-        self.backtester = Backtester()
+        self.risk_controller = RiskController(initial_capital=self.config.initial_capital, strategy_config=self.config)
+        self.backtester = Backtester(strategy_config=self.config, 
+                                     strategy_decision=self.strategy_decision, 
+                                     model_trainer=self.model_trainer, 
+                                     risk_controller=self.risk_controller)
         self.monitor = MonitorPanel()
         
         # 新增优化模块

@@ -91,7 +91,8 @@ class MonthlySummary:
         summary = {
             'month': month_key,
             'total_trades': len(monthly_trades),
-            'stock_count': monthly_trades['stock'].nunique() if 'stock' in monthly_trades.columns else monthly_trades['stock_code'].nunique()
+            'stock_count': monthly_trades['stock'].nunique() if 'stock' in monthly_trades.columns else monthly_trades['stock_code'].nunique(),
+            'report_generated_time': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
         # 计算盈亏情况
@@ -114,6 +115,26 @@ class MonthlySummary:
                 avg_profit = closed_trades[closed_trades['pnl'] > 0]['pnl'].mean() if summary['profit_trades'] > 0 else 0
                 avg_loss = abs(closed_trades[closed_trades['pnl'] < 0]['pnl'].mean()) if summary['loss_trades'] > 0 else 1
                 summary['profit_loss_ratio'] = avg_profit / avg_loss
+                
+                # 计算连续盈利和连续亏损次数
+                closed_trades_sorted = closed_trades.sort_values('time' if 'time' in closed_trades.columns else 'sell_date')
+                consecutive_wins = 0
+                max_consecutive_wins = 0
+                consecutive_losses = 0
+                max_consecutive_losses = 0
+                
+                for _, trade in closed_trades_sorted.iterrows():
+                    if trade['pnl'] > 0:
+                        consecutive_wins += 1
+                        max_consecutive_wins = max(max_consecutive_wins, consecutive_wins)
+                        consecutive_losses = 0
+                    else:
+                        consecutive_losses += 1
+                        max_consecutive_losses = max(max_consecutive_losses, consecutive_losses)
+                        consecutive_wins = 0
+                
+                summary['max_consecutive_wins'] = max_consecutive_wins
+                summary['max_consecutive_losses'] = max_consecutive_losses
         
         # 计算收益率相关指标
         if 'return_rate' in monthly_trades.columns:
@@ -125,35 +146,120 @@ class MonthlySummary:
                 summary['max_return_rate'] = closed_trades['return_rate'].max()
                 summary['min_return_rate'] = closed_trades['return_rate'].min()
                 summary['positive_return_rate'] = len(closed_trades[closed_trades['return_rate'] > 0]) / len(closed_trades)
+                
+                # 计算收益率分布
+                returns = closed_trades['return_rate']
+                summary['return_distribution'] = {
+                    'count': len(returns),
+                    'mean': float(returns.mean()),
+                    'std': float(returns.std()),
+                    'skew': float(returns.skew()),
+                    'kurtosis': float(returns.kurtosis()),
+                    'percentile_25': float(np.percentile(returns, 25)),
+                    'percentile_50': float(np.percentile(returns, 50)),
+                    'percentile_75': float(np.percentile(returns, 75)),
+                    'percentile_95': float(np.percentile(returns, 95)),
+                    'percentile_5': float(np.percentile(returns, 5))
+                }
         
         # 按股票统计
         stock_col = 'stock' if 'stock' in monthly_trades.columns else 'stock_code'
         stock_stats = monthly_trades.groupby(stock_col).agg({
             'pnl': ['sum', 'mean', 'count'],
-            'return_rate': ['mean', 'max', 'min']
+            'return_rate': ['mean', 'max', 'min'],
+            'time': ['min', 'max']  # 首次交易时间和最后交易时间
         }).reset_index()
         
-        stock_stats.columns = [stock_col, 'total_pnl', 'avg_pnl', 'trade_count', 'avg_return_rate', 'max_return_rate', 'min_return_rate']
+        stock_stats.columns = [stock_col, 'total_pnl', 'avg_pnl', 'trade_count', 'avg_return_rate', 'max_return_rate', 'min_return_rate', 'first_trade_time', 'last_trade_time']
         stock_stats = stock_stats.sort_values('total_pnl', ascending=False)
         
-        summary['stock_stats'] = stock_stats.to_dict('records')
+        # 添加股票胜率
+        for idx, row in stock_stats.iterrows():
+            # 获取该股票的所有交易
+            stock_trades = monthly_trades[monthly_trades[stock_col] == row[stock_col]]
+            # 计算胜率
+            closed_trades = stock_trades[stock_trades['pnl'].notnull()]
+            if not closed_trades.empty:
+                win_rate = len(closed_trades[closed_trades['pnl'] > 0]) / len(closed_trades)
+                stock_stats.at[idx, 'win_rate'] = win_rate
+            else:
+                stock_stats.at[idx, 'win_rate'] = 0
         
-        # 按行业统计（如果有行业信息）
+        # 股票收益率排行榜（按总盈亏）
+        stock_profit_rank = stock_stats.sort_values('total_pnl', ascending=False).head(10)
+        summary['stock_profit_rank'] = stock_profit_rank.to_dict('records')
+        
+        # 股票收益率排行榜（按平均收益率）
+        stock_avg_return_rank = stock_stats[stock_stats['trade_count'] >= 2].sort_values('avg_return_rate', ascending=False).head(10)
+        summary['stock_avg_return_rank'] = stock_avg_return_rank.to_dict('records')
+        
+        # 按板块统计（如果有行业信息）
         if 'sector' in monthly_trades.columns:
             sector_stats = monthly_trades.groupby('sector').agg({
                 'pnl': ['sum', 'mean', 'count'],
-                'return_rate': ['mean', 'max', 'min']
+                'return_rate': ['mean', 'max', 'min'],
+                'stock': ['nunique']  # 每个板块涉及的股票数量
             }).reset_index()
             
-            sector_stats.columns = ['sector', 'total_pnl', 'avg_pnl', 'trade_count', 'avg_return_rate', 'max_return_rate', 'min_return_rate']
+            sector_stats.columns = ['sector', 'total_pnl', 'avg_pnl', 'trade_count', 'avg_return_rate', 'max_return_rate', 'min_return_rate', 'stock_count']
             sector_stats = sector_stats.sort_values('total_pnl', ascending=False)
             
-            summary['sector_stats'] = sector_stats.to_dict('records')
+            # 计算板块胜率
+            for idx, row in sector_stats.iterrows():
+                sector_trades = monthly_trades[monthly_trades['sector'] == row['sector']]
+                closed_trades = sector_trades[sector_trades['pnl'].notnull()]
+                if not closed_trades.empty:
+                    win_rate = len(closed_trades[closed_trades['pnl'] > 0]) / len(closed_trades)
+                    sector_stats.at[idx, 'win_rate'] = win_rate
+                else:
+                    sector_stats.at[idx, 'win_rate'] = 0
+            
+            # 板块收益排行榜
+            sector_profit_rank = sector_stats.sort_values('total_pnl', ascending=False).head(10)
+            summary['sector_profit_rank'] = sector_profit_rank.to_dict('records')
+            
+            # 板块平均收益率排行榜
+            sector_avg_return_rank = sector_stats[sector_stats['trade_count'] >= 3].sort_values('avg_return_rate', ascending=False).head(10)
+            summary['sector_avg_return_rank'] = sector_avg_return_rank.to_dict('records')
         
         # 按交易类型统计
         if 'action' in monthly_trades.columns:
             action_stats = monthly_trades['action'].value_counts().to_dict()
             summary['action_stats'] = action_stats
+            
+            # 按交易类型统计盈亏
+            if 'pnl' in monthly_trades.columns:
+                action_pnl = monthly_trades.groupby('action')['pnl'].sum().to_dict()
+                action_avg_pnl = monthly_trades.groupby('action')['pnl'].mean().to_dict()
+                summary['action_pnl'] = action_pnl
+                summary['action_avg_pnl'] = action_avg_pnl
+        
+        # 按天统计交易量
+        if 'time' in monthly_trades.columns:
+            daily_trades = monthly_trades.groupby(monthly_trades['time'].dt.date).size().reset_index(name='trade_count')
+            daily_trades.columns = ['date', 'trade_count']
+            summary['daily_trade_distribution'] = daily_trades.to_dict('records')
+        
+        # 交易理由分析
+        if 'reason' in monthly_trades.columns:
+            # 统计主要交易理由
+            buy_reasons = []
+            sell_reasons = []
+            for _, trade in monthly_trades.iterrows():
+                if trade['action'] == 'buy':
+                    buy_reasons.append(trade['reason'])
+                else:
+                    sell_reasons.append(trade['reason'])
+            
+            # 计算前5个主要理由
+            from collections import Counter
+            if buy_reasons:
+                buy_reason_counter = Counter(buy_reasons)
+                summary['top_buy_reasons'] = buy_reason_counter.most_common(5)
+            
+            if sell_reasons:
+                sell_reason_counter = Counter(sell_reasons)
+                summary['top_sell_reasons'] = sell_reason_counter.most_common(5)
         
         # 保存到月度报告字典
         self.monthly_reports[month_key] = summary

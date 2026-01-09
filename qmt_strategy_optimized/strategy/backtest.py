@@ -15,23 +15,34 @@ logger = setup_logger()
 class Backtester:
     """回测类，用于进行历史回测和策略评估"""
     
-    def __init__(self):
-        """初始化回测器"""
+    def __init__(self, strategy_config=None, strategy_decision=None, model_trainer=None, risk_controller=None):
+        """初始化回测器
+        
+        Args:
+            strategy_config: 策略配置对象
+            strategy_decision: 策略决策器对象
+            model_trainer: 模型训练器对象
+            risk_controller: 风险控制器对象
+        """
         logger.info("初始化回测器")
         
-        # 初始化回测参数
-        self.initial_capital = config.INITIAL_CAPITAL  # 初始资金
-        self.commission_rate = config.COMMISSION_RATE  # 佣金率
-        self.slippage_rate = config.SLIPPAGE_RATE  # 滑点率
+        # 使用StrategyConfig或创建默认配置
+        from strategy.strategy_config import StrategyConfig
+        self.config = strategy_config if strategy_config is not None else StrategyConfig()
         
-        # 初始化策略模块
+        # 初始化回测参数
+        self.initial_capital = self.config.initial_capital  # 初始资金
+        self.commission_rate = self.config.commission_rate  # 佣金率
+        self.slippage_rate = self.config.slippage_rate  # 滑点率
+        
+        # 依赖注入策略模块
         from strategy.strategy_decision import StrategyDecision
         from strategy.model_train import ModelTrainer
         from strategy.risk_control import RiskController
         
-        self.strategy_decision = StrategyDecision()  # 策略决策器
-        self.model_trainer = ModelTrainer()  # 模型训练器
-        self.risk_controller = RiskController(initial_capital=self.initial_capital)  # 风险控制器
+        self.strategy_decision = strategy_decision if strategy_decision is not None else StrategyDecision()  # 策略决策器
+        self.model_trainer = model_trainer if model_trainer is not None else ModelTrainer()  # 模型训练器
+        self.risk_controller = risk_controller if risk_controller is not None else RiskController(initial_capital=self.initial_capital)  # 风险控制器
         
         # 加载预训练模型
         logger.info("加载预训练模型")
@@ -214,21 +225,34 @@ class Backtester:
         
         # 检查数据结构
         if 'date' not in features.columns:
-            logger.warning("特征数据中没有日期列，添加随机日期")
-            # 添加随机日期列（2025年的随机日期）
+            logger.warning("特征数据中没有日期列，添加连续日期")
+            # 添加连续日期列（2025年的连续日期）
             start_date = pd.Timestamp('2025-01-01')
-            end_date = pd.Timestamp('2025-12-31')
-            # 生成随机日期序列
-            features['date'] = [start_date + pd.Timedelta(days=np.random.randint(0, 365)) for _ in range(len(features))]
-            logger.info(f"添加随机日期后，日期范围：{features['date'].min()} 到 {features['date'].max()}")
+            # 计算需要的交易日数量
+            n_days = len(features) // 100 + 1  # 假设每天最多100只股票
+            # 生成连续的交易日序列
+            trading_dates = pd.bdate_range(start=start_date, periods=n_days)
+            # 为每只股票分配日期，按顺序循环使用交易日
+            features['date'] = [trading_dates[i // 100] for i in range(len(features))]
+            logger.info(f"添加连续日期后，日期范围：{features['date'].min()} 到 {features['date'].max()}")
             logger.info(f"唯一日期数量：{features['date'].nunique()}")
         
         if 'stock_code' not in features.columns:
-            logger.warning("特征数据中没有股票代码列，添加随机股票代码")
-            # 添加随机股票代码列
-            features['stock_code'] = [f'STOCK_{i % 6 + 1}' for i in range(len(features))]
-            logger.info(f"添加随机股票代码后，股票数量：{features['stock_code'].nunique()}")
-            logger.info(f"股票代码列表：{features['stock_code'].unique()}")
+            logger.warning("特征数据中没有股票代码列，添加真实格式股票代码")
+            # 添加真实格式的股票代码（沪市6开头，深市0开头）
+            stock_codes = []
+            for i in range(len(features)):
+                # 交替生成沪市和深市股票代码
+                if i % 2 == 0:
+                    # 沪市：600000-603999
+                    code = f"600{i//2:03d}.SH" if i//2 < 1000 else f"601{i//2-1000:03d}.SH"
+                else:
+                    # 深市：000000-002999
+                    code = f"000{i//2:03d}.SZ" if i//2 < 1000 else f"002{i//2-1000:03d}.SZ"
+                stock_codes.append(code)
+            features['stock_code'] = stock_codes
+            logger.info(f"添加真实格式股票代码后，股票数量：{features['stock_code'].nunique()}")
+            logger.info(f"股票代码示例：{features['stock_code'].unique()[:5]}")
         
         # 按日期分组处理数据
         grouped = features.groupby('date')
@@ -251,37 +275,56 @@ class Backtester:
         """模拟每日交易，使用真实策略决策过程"""
         logger.info(f"模拟{date}的交易")
         
-        # 首先处理卖出操作：对所有持仓股票生成卖出决策
+        # 生成卖出决策：基于策略逻辑，而不是每日清仓
         sell_decisions = []
         for stock in list(self.holdings.keys()):
-            # 对每只持仓股票生成卖出决策
-            sell_decision = {
-                'stock': stock,
-                'action': 'sell',
-                'price': 0,  # 价格会在执行时计算
-                'probability': 0.5,
-                'total_score': 50,
-                'time': pd.Timestamp(date)
-            }
-            sell_decisions.append(sell_decision)
+            # 获取股票当日数据
+            stock_data = daily_features[daily_features['stock_code'] == stock]
+            if not stock_data.empty:
+                row = stock_data.iloc[0]
+                # 基于策略逻辑决定是否卖出（示例：跌破止损位或达到止盈目标）
+                holding = self.holdings[stock]
+                current_price = row.get('close', holding['buy_price'])
+                
+                # 简单的卖出策略：
+                # 1. 盈利超过5%时止盈
+                # 2. 亏损超过3%时止损
+                profit_rate = (current_price - holding['buy_price']) / holding['buy_price']
+                if profit_rate >= 0.05 or profit_rate <= -0.03:
+                    sell_decision = {
+                        'stock': stock,
+                        'action': 'sell',
+                        'price': current_price,
+                        'probability': 0.7,  # 较高的卖出概率
+                        'total_score': 70,    # 较高的卖出分数
+                        'time': pd.Timestamp(date)
+                    }
+                    sell_decisions.append(sell_decision)
         
-        # 然后生成买入决策
+        # 生成买入决策
         buy_decisions = []
         # 遍历每日数据中的股票，生成买入决策
         for idx, row in daily_features.iterrows():
             # 获取股票代码
             stock = row['stock_code'] if 'stock_code' in row else f'stock_{idx % 6 + 1}'
             
-            # 生成买入决策
-            buy_decision = {
-                'stock': stock,
-                'action': 'buy',
-                'price': row.get('open', 50) if row.get('open', 0) > 0 else 50,
-                'probability': 0.5,
-                'total_score': 50,
-                'time': pd.Timestamp(date)
-            }
-            buy_decisions.append(buy_decision)
+            # 基于策略逻辑决定是否买入
+            # 示例：只买入评分较高的股票，且不重复买入已持有的股票
+            if stock not in self.holdings:
+                # 获取开盘价
+                open_price = row.get('open', 50) if row.get('open', 0) > 0 else 50
+                
+                # 简单的买入策略：只买入开盘价大于0的股票
+                if open_price > 0:
+                    buy_decision = {
+                        'stock': stock,
+                        'action': 'buy',
+                        'price': open_price,
+                        'probability': 0.6,  # 中等的买入概率
+                        'total_score': 60,    # 中等的买入分数
+                        'time': pd.Timestamp(date)
+                    }
+                    buy_decisions.append(buy_decision)
         
         # 合并决策，先卖后买
         decisions = sell_decisions + buy_decisions
@@ -303,8 +346,6 @@ class Backtester:
         
         # 更新策略决策器的持仓
         self.strategy_decision.update_holdings(trade_results)
-        
-        # 交易记录已经在_simulate_sell方法中添加，无需重复处理
     
     def _predict_stocks(self, features):
         """使用模型进行预测"""
@@ -325,51 +366,53 @@ class Backtester:
                 expected_features = self.model_trainer.model.n_features_in_
                 logger.info(f"模型期望的特征数量：{expected_features}")
                 
-                # 如果特征数量不匹配，只使用前N个特征
+                # 如果特征数量不匹配，调整特征数量
                 if len(numeric_features.columns) > expected_features:
                     logger.warning(f"特征数量不匹配，模型期望{expected_features}个特征，但提供了{len(numeric_features.columns)}个，只使用前{expected_features}个特征")
                     # 使用前N个特征
                     numeric_features = numeric_features.iloc[:, :expected_features]
                     logger.info(f"调整后用于预测的特征数量：{len(numeric_features.columns)}")
                 elif len(numeric_features.columns) < expected_features:
-                    logger.warning(f"特征数量不匹配，模型期望{expected_features}个特征，但提供了{len(numeric_features.columns)}个，添加随机特征以满足要求")
-                    # 添加随机特征以满足模型要求
-                    additional_features = expected_features - len(numeric_features.columns)
-                    for i in range(additional_features):
-                        numeric_features[f'rand_feat_{i}'] = np.random.rand(len(numeric_features))
-                    logger.info(f"添加随机特征后特征数量：{len(numeric_features.columns)}")
+                    logger.warning(f"特征数量不匹配，模型期望{expected_features}个特征，但提供了{len(numeric_features.columns)}个，进行特征扩展")
+                    # 避免添加随机特征，而是使用现有特征的组合或重复
+                    from sklearn.preprocessing import PolynomialFeatures
+                    poly = PolynomialFeatures(degree=2, include_bias=False, interaction_only=True)
+                    # 生成交互特征直到达到期望数量
+                    expanded_features = numeric_features.copy()
+                    while len(expanded_features.columns) < expected_features and len(expanded_features.columns) < 200:  # 限制最大特征数防止过度扩展
+                        expanded = poly.fit_transform(expanded_features)
+                        expanded_df = pd.DataFrame(expanded, index=expanded_features.index, 
+                                                columns=[f'poly_{i}' for i in range(expanded.shape[1])])
+                        expanded_features = pd.concat([expanded_features, expanded_df], axis=1)
+                        # 移除重复列
+                        expanded_features = expanded_features.loc[:, ~expanded_features.columns.duplicated()]
+                    # 如果仍然不够，只使用现有特征
+                    if len(expanded_features.columns) > expected_features:
+                        expanded_features = expanded_features.iloc[:, :expected_features]
+                    numeric_features = expanded_features
+                    logger.info(f"扩展后用于预测的特征数量：{len(numeric_features.columns)}")
         except Exception as e:
             logger.error(f"获取模型特征数量失败：{e}")
         
         # 使用模型进行预测
-        predictions = self.model_trainer.predict(numeric_features)
-        
-        # 添加调试信息
-        if predictions:
-            logger.info(f"预测结果：{predictions}")
-            logger.info(f"预测概率最小值：{predictions['probabilities'].min()}, 最大值：{predictions['probabilities'].max()}, 平均值：{predictions['probabilities'].mean()}")
+        try:
+            predictions = self.model_trainer.predict(numeric_features)
             
-            # 如果所有概率都为0，添加一些随机噪声以生成有效交易
-            if np.all(predictions['probabilities'] == 0):
-                logger.warning("所有预测概率都为0，添加随机噪声以生成有效交易")
-                # 生成随机概率，确保有一部分高于阈值
-                noise = np.random.rand(len(predictions['probabilities'])) * 0.5  # 0-0.5的随机噪声
-                predictions['probabilities'] = noise
-                # 重新生成预测结果
-                predictions['predictions'] = (predictions['probabilities'] > 0.1).astype(int)
-                logger.info(f"添加噪声后预测结果：{predictions}")
-                logger.info(f"添加噪声后预测概率最小值：{predictions['probabilities'].min()}, 最大值：{predictions['probabilities'].max()}, 平均值：{predictions['probabilities'].mean()}")
-        else:
-            logger.warning("模型预测失败，生成随机预测结果")
-            # 生成随机预测结果
-            n_samples = len(numeric_features)
-            predictions = {
-                'predictions': np.random.randint(0, 2, size=n_samples),
-                'probabilities': np.random.rand(n_samples)
-            }
-            logger.info(f"随机预测结果：{predictions}")
-        
-        return predictions
+            # 添加调试信息
+            if predictions:
+                logger.info(f"预测结果：{predictions}")
+                logger.info(f"预测概率最小值：{predictions['probabilities'].min()}, 最大值：{predictions['probabilities'].max()}, 平均值：{predictions['probabilities'].mean()}")
+                
+                # 如果所有概率都为0或预测结果无效，返回空结果
+                if np.all(predictions['probabilities'] == 0):
+                    logger.warning("所有预测概率都为0，返回空预测结果")
+                    return None
+            
+            return predictions
+        except Exception as e:
+            logger.error(f"模型预测失败：{e}")
+            # 预测失败时返回空结果，不生成随机预测
+            return None
     
     def _execute_decisions(self, date, decisions, daily_features):
         """执行交易决策"""
@@ -423,11 +466,17 @@ class Backtester:
                 logger.warning(f"{date} {stock} 买入数量无效：{quantity}")
                 return None
             
-            # 计算买入成本（考虑滑点和佣金）
+            # 计算买入成本（考虑滑点、佣金和市场冲击成本）
             actual_price = price * (1 + self.slippage_rate)
             buy_value = actual_price * quantity
             commission = buy_value * self.commission_rate
-            total_cost = buy_value + commission
+            
+            # 计算市场冲击成本：基于订单大小的非线性成本
+            # 市场冲击成本公式：冲击成本率 = 0.1% * sqrt(订单金额/100万)
+            market_impact_rate = 0.001 * np.sqrt(buy_value / 1000000)
+            market_impact_cost = buy_value * market_impact_rate
+            
+            total_cost = buy_value + commission + market_impact_cost
             
             if total_cost > self.current_capital:
                 logger.warning(f"{date} {stock} 可用资金不足，需要{total_cost:.2f}，但只有{self.current_capital:.2f}")
@@ -500,11 +549,17 @@ class Backtester:
             # 计算卖出数量（全部卖出）
             quantity = holding['quantity']
             
-            # 计算卖出收入（考虑滑点和佣金）
+            # 计算卖出收入（考虑滑点、佣金和市场冲击成本）
             actual_price = price * (1 - self.slippage_rate)
             sell_value = actual_price * quantity
             commission = sell_value * self.commission_rate
-            total_revenue = sell_value - commission
+            
+            # 计算市场冲击成本：基于订单大小的非线性成本
+            # 市场冲击成本公式：冲击成本率 = 0.1% * sqrt(订单金额/100万)
+            market_impact_rate = 0.001 * np.sqrt(sell_value / 1000000)
+            market_impact_cost = sell_value * market_impact_rate
+            
+            total_revenue = sell_value - commission - market_impact_cost
             
             # 计算盈亏
             cost = holding['buy_price'] * quantity

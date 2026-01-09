@@ -14,14 +14,23 @@ logger = setup_logger()
 class RiskController:
     """风险控制类，用于监控和控制交易风险"""
     
-    def __init__(self, initial_capital=1000000):
-        """初始化风险控制器"""
+    def __init__(self, initial_capital=None, strategy_config=None):
+        """初始化风险控制器
+        
+        Args:
+            initial_capital: 初始资金
+            strategy_config: 策略配置对象
+        """
         logger.info("初始化风险控制器")
         
+        # 使用StrategyConfig或创建默认配置
+        from strategy.strategy_config import StrategyConfig
+        self.config = strategy_config if strategy_config is not None else StrategyConfig()
+        
         # 初始化资金相关参数
-        self.initial_capital = initial_capital  # 初始资金
-        self.current_capital = initial_capital  # 当前可用资金
-        self.total_assets = initial_capital  # 当前总资产（可用资金+持仓市值）
+        self.initial_capital = initial_capital if initial_capital is not None else self.config.initial_capital  # 初始资金
+        self.current_capital = self.initial_capital  # 当前可用资金
+        self.total_assets = self.initial_capital  # 当前总资产（可用资金+持仓市值）
         
         # 初始化风险控制参数
         self.current_total_position = 0.0  # 当前总仓位比例
@@ -33,11 +42,19 @@ class RiskController:
         
         # 新增风险控制参数
         self.max_drawdown = 0.0  # 最大回撤
-        self.highest_assets = initial_capital  # 历史最高总资产
+        self.highest_assets = self.initial_capital  # 历史最高总资产
         self.daily_transaction_count = 0  # 当日交易次数
-        self.max_daily_transactions = 20  # 单日最大交易次数
+        self.max_daily_transactions = self.config.max_daily_transactions  # 单日最大交易次数
         self.liquidity_threshold = 1000000  # 降低流动性阈值，允许更多交易通过
         self.volatility_threshold = 0.10  # 波动率阈值（日涨跌幅超过此值的股票不交易）
+        
+        # 仓位管理相关参数
+        self.base_max_total_position = config.MAX_TOTAL_POSITION  # 基础总仓位上限
+        self.current_max_total_position = config.MAX_TOTAL_POSITION  # 当前动态总仓位上限
+        self.base_max_position_per_stock = self.config.max_single_position  # 基础单票仓位上限
+        self.market_risk_level = 0.5  # 当前市场风险水平（0-1，0表示低风险，1表示高风险）
+        self.sector_hotness = {}  # 板块热度评分
+        self.stock_sector_map = {}  # 股票板块映射
     
     def check(self, decisions):
         """检查交易决策是否符合风险控制规则"""
@@ -144,9 +161,12 @@ class RiskController:
         new_stock_value = current_stock_value + buy_value
         new_stock_ratio = new_stock_value / self.total_assets
         
+        # 获取动态单票仓位限制
+        dynamic_limit = self.calculate_dynamic_single_stock_limit(stock)
+        
         # 检查是否超过单票最大仓位限制
-        if new_stock_ratio > config.MAX_POSITION_PER_STOCK:
-            logger.warning(f"单票仓位({new_stock_ratio:.4f})超过限制({config.MAX_POSITION_PER_STOCK:.4f})，拒绝买入")
+        if new_stock_ratio > dynamic_limit:
+            logger.warning(f"单票仓位({new_stock_ratio:.4f})超过动态限制({dynamic_limit:.4f})，拒绝买入")
             return False
         
         return True
@@ -164,8 +184,8 @@ class RiskController:
         new_total_ratio = new_total_value / self.total_assets
         
         # 检查是否超过总仓位最大限制
-        if new_total_ratio > config.MAX_TOTAL_POSITION:
-            logger.warning(f"总仓位({new_total_ratio:.4f})超过限制({config.MAX_TOTAL_POSITION:.4f})，拒绝买入")
+        if new_total_ratio > self.current_max_total_position:
+            logger.warning(f"总仓位({new_total_ratio:.4f})超过动态总仓位限制({self.current_max_total_position:.4f})，拒绝买入")
             return False
         
         return True
@@ -280,6 +300,91 @@ class RiskController:
         
         return False
     
+    def update_market_risk_level(self, market_data):
+        """更新市场风险水平"""
+        logger.info("更新市场风险水平")
+        
+        # 初始化风险水平
+        risk_level = 0.5
+        
+        try:
+            if market_data is not None and hasattr(market_data, 'index_change'):
+                # 根据大盘涨跌幅调整风险水平
+                index_change = market_data.index_change
+                if index_change >= 0.02:  # 大盘上涨超过2%，降低风险水平
+                    risk_level = max(0.3, risk_level - 0.2)
+                elif index_change <= -0.02:  # 大盘下跌超过2%，提高风险水平
+                    risk_level = min(0.8, risk_level + 0.3)
+            
+            # 根据连续亏损次数调整风险水平
+            if self.consecutive_losses >= 3:
+                risk_level = min(0.9, risk_level + 0.2)
+            
+            # 根据最大回撤调整风险水平
+            current_drawdown = (self.highest_assets - self.total_assets) / self.highest_assets
+            if current_drawdown > 0.05:
+                risk_level = min(0.8, risk_level + 0.2)
+            
+            self.market_risk_level = risk_level
+            logger.info(f"市场风险水平更新为：{self.market_risk_level:.2f}")
+            
+            # 根据风险水平调整动态仓位限制
+            self.calculate_dynamic_position_limits()
+            
+        except Exception as e:
+            logger.error(f"更新市场风险水平失败：{e}")
+    
+    def update_sector_hotness(self, sector_hotness_data):
+        """更新板块热度"""
+        logger.info("更新板块热度")
+        self.sector_hotness = sector_hotness_data
+        
+    def update_stock_sector_map(self, stock_sector_map):
+        """更新股票板块映射"""
+        logger.info("更新股票板块映射")
+        self.stock_sector_map = stock_sector_map
+    
+    def calculate_dynamic_position_limits(self):
+        """根据市场风险水平计算动态仓位限制"""
+        logger.info("计算动态仓位限制")
+        
+        # 根据市场风险水平调整总仓位上限
+        # 风险水平越高，仓位上限越低
+        self.current_max_total_position = self.base_max_total_position * (1 - (self.market_risk_level - 0.5) * 0.4)
+        
+        # 确保仓位上限在合理范围内
+        self.current_max_total_position = max(0.3, min(self.base_max_total_position, self.current_max_total_position))
+        
+        logger.info(f"动态总仓位上限调整为：{self.current_max_total_position:.4f}")
+    
+    def _get_stock_sector(self, stock):
+        """获取股票所属板块"""
+        return self.stock_sector_map.get(stock, '其他')
+    
+    def _get_sector_hotness(self, sector):
+        """获取板块热度"""
+        return self.sector_hotness.get(sector, {}).get('hotness_score', 0.5)
+    
+    def calculate_dynamic_single_stock_limit(self, stock):
+        """计算单个股票的动态仓位限制"""
+        # 基础单票仓位上限
+        base_limit = self.base_max_position_per_stock
+        
+        # 获取股票所属板块
+        sector = self._get_stock_sector(stock)
+        
+        # 获取板块热度
+        sector_hotness = self._get_sector_hotness(sector)
+        
+        # 根据板块热度调整单票仓位上限
+        # 板块热度越高，单票仓位上限越高
+        dynamic_limit = base_limit * (0.8 + sector_hotness * 0.4)
+        
+        # 确保动态上限在合理范围内
+        dynamic_limit = max(base_limit * 0.8, min(0.4, dynamic_limit))  # 最高40%
+        
+        return dynamic_limit
+    
     def update_risk_status(self, trade_results):
         """更新风险控制状态"""
         logger.info("更新风险控制状态")
@@ -336,6 +441,10 @@ class RiskController:
             # 更新总仓位比例
             self.current_total_position = sum(self.stock_positions.values()) / self.total_assets
             
+            # 更新历史最高总资产
+            if self.total_assets > self.highest_assets:
+                self.highest_assets = self.total_assets
+            
             # 更新盈亏情况
             self.daily_pnl += pnl
             
@@ -349,7 +458,7 @@ class RiskController:
             else:
                 self.consecutive_losses = 0
         
-        logger.info(f"风险状态更新完成：总资产={self.total_assets:.2f}, 可用资金={self.current_capital:.2f}, 总仓位={self.current_total_position:.4f}")
+        logger.info(f"风险状态更新完成：总资产={self.total_assets:.2f}, 可用资金={self.current_capital:.2f}, 总仓位={self.current_total_position:.4f}, 市场风险水平={self.market_risk_level:.2f}")
     
     def reset_daily_status(self):
         """重置每日风险控制状态"""

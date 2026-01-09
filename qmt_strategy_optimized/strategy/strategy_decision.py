@@ -14,9 +14,17 @@ logger = setup_logger()
 class StrategyDecision:
     """策略决策类，用于基于模型预测和市场数据做出交易决策"""
     
-    def __init__(self):
-        """初始化策略决策器"""
+    def __init__(self, strategy_config=None):
+        """初始化策略决策器
+        
+        Args:
+            strategy_config: 策略配置对象
+        """
         logger.info("初始化策略决策器")
+        
+        # 使用StrategyConfig或创建默认配置
+        from strategy.strategy_config import StrategyConfig
+        self.config = strategy_config if strategy_config is not None else StrategyConfig()
         
         # 初始化持仓信息
         self.holdings = {}
@@ -26,22 +34,42 @@ class StrategyDecision:
     
     def _calculate_stock_score(self, stock, row, probability):
         """计算股票综合评分"""
-        # 1. 模型预测概率权重 (35%)
-        probability_score = probability * 35
+        # 1. 模型预测概率权重 (30%)
+        probability_score = probability * 30
         
-        # 2. 竞价特征评分 (25%)
+        # 2. 竞价特征评分 (30%) - 增加涨停可能性相关因子
         bid_score = 0
-        # 竞价强度
+        
+        # 2.1 竞价强度（考虑涨跌方向）
         bid_intensity = getattr(row, 'bid_intensity', 0) if hasattr(row, 'bid_intensity') else 0
-        bid_score += min(abs(bid_intensity) * 15, 15)
-        # 竞价量比
+        # 正向竞价强度得分更高
+        bid_score += min(bid_intensity * 20, 15)  # 调整权重，增加正向竞价强度的重要性
+        
+        # 2.2 竞价量比
         if hasattr(row, 'bid_volume_ratio'):
             bid_volume_ratio = row.bid_volume_ratio
-            bid_score += min(bid_volume_ratio * 5, 5)
-        # 竞价换手率
+            bid_score += min(bid_volume_ratio * 8, 8)  # 增加权重
+        
+        # 2.3 竞价换手率
         if hasattr(row, 'bid_turnover_rate'):
             bid_turnover_rate = row.bid_turnover_rate
-            bid_score += min(bid_turnover_rate * 5, 5)
+            bid_score += min(bid_turnover_rate * 10, 7)  # 增加权重
+        
+        # 2.4 竞价封单金额（新增）
+        if hasattr(row, 'bid_order_amount'):
+            bid_order_amount = row.bid_order_amount
+            # 封单金额越大，得分越高
+            bid_score += min((bid_order_amount / 100000000) * 5, 5)  # 每1亿封单得5分，最高5分
+        
+        # 2.5 封单比例（新增）
+        if hasattr(row, 'bid_order_ratio'):
+            bid_order_ratio = row.bid_order_ratio
+            # 封单比例越高，得分越高
+            bid_score += min(bid_order_ratio * 100, 5)  # 封单比例1%得1分，最高5分
+        
+        # 2.6 接近涨停标记（新增）
+        if hasattr(row, 'is_near_limit_up') and row.is_near_limit_up:
+            bid_score += 5  # 接近涨停的股票额外加5分
         
         # 3. 基本面评分 (15%)
         fundamental_score = 0
@@ -78,20 +106,20 @@ class StrategyDecision:
             elif 1 <= turnover_rate < 2 or 10 < turnover_rate <= 20:
                 fundamental_score += 1
         
-        # 4. 技术面评分 (15%)
+        # 4. 技术面评分 (10%)
         technical_score = 0
         # 短期趋势
         if hasattr(row, 'trend_5d'):
             trend_5d = row.trend_5d
-            technical_score += min(trend_5d * 100, 5)
+            technical_score += min(trend_5d * 100, 4)
         # 中期趋势
         if hasattr(row, 'trend_20d'):
             trend_20d = row.trend_20d
-            technical_score += min(trend_20d * 100, 5)
+            technical_score += min(trend_20d * 100, 4)
         # 均线多头排列
         if hasattr(row, 'bullish_ma_arrangement'):
             if row.bullish_ma_arrangement == 1:
-                technical_score += 3
+                technical_score += 2
         # MACD金叉
         if hasattr(row, 'macd_golden_cross'):
             if row.macd_golden_cross == 1:
@@ -102,55 +130,68 @@ class StrategyDecision:
         # 板块涨幅
         if hasattr(row, 'sector_change'):
             sector_change = row.sector_change
-            sector_score += min(sector_change * 50, 5)
+            sector_score += min(sector_change * 60, 6)
         # 板块涨停家数
         if hasattr(row, 'sector_limit_up_count'):
             sector_limit_up_count = row.sector_limit_up_count
-            sector_score += min(sector_limit_up_count * 1, 3)
+            sector_score += min(sector_limit_up_count * 1.5, 4)
         # 板块资金流入
         if hasattr(row, 'sector_money_flow'):
             sector_money_flow = row.sector_money_flow
             if sector_money_flow > 0:
                 sector_score += 2
         
-        # 6. 市场环境评分 (10%)
+        # 6. 市场环境评分 (5%)
         market_score = 0
         # 大盘指数涨幅
         if hasattr(row, 'index_change'):
             index_change = row.index_change
-            market_score += min(index_change * 50, 5)
+            market_score += min(index_change * 50, 3)
         # 涨跌家数比
         if hasattr(row, 'up_down_ratio'):
             up_down_ratio = row.up_down_ratio
-            market_score += min(up_down_ratio * 5, 5)
-        
-        # 7. 流动性风险评分 (10%)
-        liquidity_score = 0
-        # 成交量
-        if hasattr(row, 'volume'):
-            volume = row.volume
-            if volume >= 1000000:
-                liquidity_score += 5
-            elif volume >= 500000:
-                liquidity_score += 3
-            elif volume >= 100000:
-                liquidity_score += 1
-        # 流通市值
-        if hasattr(row, 'circulating_market_cap'):
-            market_cap = row.circulating_market_cap
-            if market_cap >= 5000000000:
-                liquidity_score += 5
-            elif market_cap >= 1000000000:
-                liquidity_score += 3
+            market_score += min(up_down_ratio * 3, 2)
         
         # 总分计算
-        total_score = probability_score + bid_score + fundamental_score + technical_score + sector_score + market_score + liquidity_score
+        total_score = probability_score + bid_score + fundamental_score + technical_score + sector_score + market_score
+        
+        # 涨停可能性加分（新增）
+        limit_up_potential_bonus = 0
+        
+        # 1. 模型预测概率高的股票，涨停可能性大
+        if probability >= 0.7:
+            limit_up_potential_bonus += 5
+        elif probability >= 0.5:
+            limit_up_potential_bonus += 2
+        
+        # 2. 竞价涨幅接近涨停的股票
+        if hasattr(row, 'bid_change'):
+            if row.bid_change >= 0.08:
+                limit_up_potential_bonus += 8
+            elif row.bid_change >= 0.05:
+                limit_up_potential_bonus += 3
+        
+        # 3. 热门板块中的股票
+        if hasattr(row, 'sector') and hasattr(row, 'sector_hotness'):
+            if row.sector_hotness >= 0.8:
+                limit_up_potential_bonus += 5
+        
+        # 4. 成交量放大的股票
+        if hasattr(row, 'volume_ratio'):
+            if row.volume_ratio >= 2:
+                limit_up_potential_bonus += 3
+        
+        # 添加涨停可能性加分
+        total_score += limit_up_potential_bonus
         
         # 动态调整：如果市场环境较差，降低风险较高股票的评分
         if hasattr(row, 'up_down_ratio') and row.up_down_ratio < 0.5:
             # 市场环境差，降低基本面较弱股票的评分
             if fundamental_score < 5:
-                total_score *= 0.8
+                total_score *= 0.85  # 调整为更合理的系数
+        
+        # 确保总分在合理范围内
+        total_score = max(0, min(100, total_score))
         
         return total_score
     
@@ -234,6 +275,30 @@ class StrategyDecision:
                 if buy_price <= 0:
                     buy_price = np.random.rand() * 100 + 10  # 10-110之间的随机价格
                 
+                # 生成买入理由
+                buy_reason = "模型预测"  # 默认理由
+                
+                # 详细的买入理由
+                detailed_reason = []
+                if probability >= 0.7:
+                    detailed_reason.append(f"模型预测概率高({probability:.2f})")
+                if hasattr(row, 'bid_change') and row.bid_change >= 0.05:
+                    detailed_reason.append(f"竞价涨幅大({row.bid_change:.2%})")
+                if hasattr(row, 'sector'):
+                    detailed_reason.append(f"属于板块({row.sector})")
+                if total_score >= 80:
+                    detailed_reason.append(f"综合评分高({total_score:.1f})")
+                
+                # 构建完整的买入理由
+                if detailed_reason:
+                    buy_reason = "; ".join(detailed_reason)
+                
+                # 获取板块信息
+                sector = getattr(row, 'sector', '未知')
+                
+                # 获取涨停可能性
+                is_near_limit_up = getattr(row, 'is_near_limit_up', False)
+                
                 # 无论概率如何，都生成买入决策
                 buy_decision = {
                     'stock': stock,
@@ -241,7 +306,11 @@ class StrategyDecision:
                     'price': buy_price,
                     'probability': probability,
                     'total_score': total_score,
-                    'time': current_time
+                    'time': current_time,
+                    'reason': buy_reason,
+                    'sector': sector,
+                    'is_near_limit_up': is_near_limit_up,
+                    'detailed_reason': detailed_reason
                 }
                 buy_decisions.append(buy_decision)
                 
@@ -267,7 +336,11 @@ class StrategyDecision:
                 'price': buy_price,
                 'probability': probability,
                 'total_score': 50,
-                'time': current_time
+                'time': current_time,
+                'reason': '强制生成',
+                'sector': '未知',
+                'is_near_limit_up': False,
+                'detailed_reason': ['强制生成']
             }
             buy_decisions.append(buy_decision)
             
@@ -317,7 +390,7 @@ class StrategyDecision:
     
     def _calculate_dynamic_stop_loss(self, stock, row, base_stop_loss):
         """
-        计算动态止损比例
+        计算动态止损比例 - 分层止损机制
         
         Args:
             stock: 股票代码
@@ -327,30 +400,62 @@ class StrategyDecision:
         Returns:
             动态止损比例
         """
-        # 1. 根据股票波动率调整
+        adjusted_stop_loss = base_stop_loss
+        
+        # 1. 根据股票市值规模设置不同的止损比例（分层1：市值分层）
+        market_cap_factor = 1.0
+        if hasattr(row, 'circulating_market_cap'):
+            market_cap = row.circulating_market_cap
+            if market_cap >= 50000000000:  # 大盘股（500亿以上）
+                market_cap_factor = 0.8  # 大盘股波动性小，止损比例可适当收窄
+            elif market_cap <= 5000000000:  # 小盘股（50亿以下）
+                market_cap_factor = 1.2  # 小盘股波动性大，止损比例可适当放宽
+            # 中盘股保持默认值
+        adjusted_stop_loss *= market_cap_factor
+        
+        # 2. 根据股票波动率调整（分层2：波动率分层）
         if hasattr(row, 'volatility'):
-            # 波动率高的股票，止损比例可以适当放宽
-            volatility_adjustment = row.volatility / 0.02  # 假设基准波动率为2%
-            adjusted_stop_loss = base_stop_loss * volatility_adjustment
-        else:
-            adjusted_stop_loss = base_stop_loss
+            volatility = row.volatility
+            if volatility > 0.04:  # 高波动率股票（波动率>4%）
+                adjusted_stop_loss *= 1.3  # 高波动率，放宽止损
+            elif volatility < 0.01:  # 低波动率股票（波动率<1%）
+                adjusted_stop_loss *= 0.7  # 低波动率，收紧止损
         
-        # 2. 根据市场环境调整
+        # 3. 根据市场环境调整（分层3：市场环境分层）
         if hasattr(row, 'market_sentiment'):
-            if row.market_sentiment < 0.3:  # 市场情绪差
+            market_sentiment = row.market_sentiment
+            if market_sentiment < 0.3:  # 市场情绪极差
                 adjusted_stop_loss = max(adjusted_stop_loss, 0.05)  # 收紧止损
-            elif row.market_sentiment > 0.7:  # 市场情绪好
+            elif market_sentiment < 0.5:  # 市场情绪较差
+                adjusted_stop_loss = max(adjusted_stop_loss, 0.04)  # 适当收紧止损
+            elif market_sentiment > 0.8:  # 市场情绪极好
                 adjusted_stop_loss = min(adjusted_stop_loss, 0.04)  # 放宽止损
         
-        # 3. 根据板块情况调整
-        if hasattr(row, 'sector_change'):
-            if row.sector_change >= 0.05:  # 板块强势
-                adjusted_stop_loss = min(adjusted_stop_loss, 0.04)  # 放宽止损
-            elif row.sector_change <= -0.05:  # 板块弱势
-                adjusted_stop_loss = max(adjusted_stop_loss, 0.05)  # 收紧止损
+        # 4. 根据板块情况调整（分层4：板块强弱分层）
+        if hasattr(row, 'sector_change') and hasattr(row, 'sector_hotness'):
+            sector_change = row.sector_change
+            sector_hotness = row.sector_hotness
+            
+            if sector_hotness >= 0.8:  # 热门板块
+                adjusted_stop_loss = min(adjusted_stop_loss, 0.045)  # 热门板块，放宽止损
+            elif sector_change <= -0.05:  # 板块大幅下跌
+                adjusted_stop_loss = max(adjusted_stop_loss, 0.05)  # 板块弱势，收紧止损
         
-        # 限制止损比例范围
+        # 5. 根据股票自身表现调整（分层5：股票表现分层）
+        if hasattr(row, 'is_near_limit_up') and row.is_near_limit_up:
+            # 可能涨停的股票，使用更宽松的止损
+            adjusted_stop_loss = min(adjusted_stop_loss, 0.05)  # 放宽止损到5%
+        
+        # 6. 根据持仓时间调整（分层6：持仓时间分层）
+        if hasattr(row, 'holding_days'):
+            holding_days = row.holding_days
+            if holding_days >= 3:  # 持仓超过3天
+                adjusted_stop_loss = max(adjusted_stop_loss, 0.04)  # 适当收紧止损
+        
+        # 限制止损比例范围，确保在合理区间内
         adjusted_stop_loss = max(0.02, min(0.08, adjusted_stop_loss))
+        
+        logger.info(f"股票{stock}的动态止损比例计算：基础={base_stop_loss:.4f}, 调整后={adjusted_stop_loss:.4f}")
         
         return adjusted_stop_loss
     
@@ -388,13 +493,42 @@ class StrategyDecision:
             # 1. 检查是否可能涨停，如果可能则持有
             is_likely_limit_up = self._is_likely_limit_up(row, return_rate)
             
-            # 2. 特殊处理：如果可能涨停且时间早于14:30，继续持有
-            if is_likely_limit_up and (current_hour < 14 or (current_hour == 14 and current_minute < 30)):
-                logger.info(f"股票{stock}可能涨停，当前时间{current_hour:02d}:{current_minute:02d}，继续持有")
-                # 更新持仓中的最高价
-                if current_price > holding.get('highest_price', 0):
-                    self.holdings[stock]['highest_price'] = current_price
-                continue
+            # 2. 特殊处理：为可能涨停的股票设计特殊持有策略
+            if is_likely_limit_up:
+                # 2.1 上午交易时间（9:30-11:30）：坚决持有可能涨停的股票
+                if current_hour < 11 or (current_hour == 11 and current_minute <= 30):
+                    logger.info(f"上午交易时间，股票{stock}可能涨停，继续持有")
+                    # 更新持仓中的最高价
+                    if current_price > holding.get('highest_price', 0):
+                        self.holdings[stock]['highest_price'] = current_price
+                    continue
+                
+                # 2.2 下午交易时间（13:00-14:30）：继续持有可能涨停的股票
+                elif current_hour < 14 or (current_hour == 14 and current_minute < 30):
+                    logger.info(f"下午交易时间，股票{stock}可能涨停，继续持有")
+                    # 更新持仓中的最高价
+                    if current_price > holding.get('highest_price', 0):
+                        self.holdings[stock]['highest_price'] = current_price
+                    continue
+                
+                # 2.3 尾盘阶段（14:30-15:00）：根据涨停确认情况决定是否卖出
+                else:
+                    # 检查是否已经涨停
+                    is_actually_limit_up = return_rate >= 0.095  # 涨幅超过9.5%，视为已涨停
+                    
+                    if is_actually_limit_up:
+                        # 已经涨停，继续持有
+                        logger.info(f"股票{stock}已涨停，继续持有")
+                        # 更新持仓中的最高价
+                        if current_price > holding.get('highest_price', 0):
+                            self.holdings[stock]['highest_price'] = current_price
+                        continue
+                    else:
+                        # 接近尾盘仍未涨停，考虑卖出
+                        logger.info(f"尾盘阶段，股票{stock}未涨停，考虑卖出")
+            
+            # 获取板块信息
+            sector = getattr(row, 'sector', '未知')
             
             # 3. 动态止盈策略
             # 基础止盈目标
@@ -409,15 +543,28 @@ class StrategyDecision:
             # 检查是否达到动态止盈目标
             if return_rate >= dynamic_profit_target:
                 # 达到目标收益率，止盈卖出
+                # 详细的卖出理由
+                detailed_reason = [
+                    f"达到止盈目标({return_rate:.2%} >= {dynamic_profit_target:.2%})",
+                    f"属于板块({sector})"
+                ]
+                if is_likely_limit_up:
+                    detailed_reason.append("可能涨停股票")
+                
+                # 构建完整的卖出理由
+                sell_reason = "; ".join(detailed_reason)
+                
                 sell_decision = {
                     'stock': stock,
                     'action': 'sell',
                     'price': current_price,
-                    'reason': 'profit_target_reached',
+                    'reason': sell_reason,
                     'return_rate': return_rate,
                     'time': current_time,
                     'profit_target': dynamic_profit_target,
-                    'is_likely_limit_up': is_likely_limit_up
+                    'is_likely_limit_up': is_likely_limit_up,
+                    'sector': sector,
+                    'detailed_reason': detailed_reason
                 }
                 sell_decisions.append(sell_decision)
                 
@@ -434,14 +581,27 @@ class StrategyDecision:
             # 检查是否达到止损条件
             if return_rate <= -dynamic_stop_loss:
                 # 达到止损比例，止损卖出
+                # 详细的卖出理由
+                detailed_reason = [
+                    f"达到止损线({return_rate:.2%} <= -{dynamic_stop_loss:.2%})",
+                    f"属于板块({sector})"
+                ]
+                if hasattr(row, 'volatility'):
+                    detailed_reason.append(f"波动率({row.volatility:.2%})")
+                
+                # 构建完整的卖出理由
+                sell_reason = "; ".join(detailed_reason)
+                
                 sell_decision = {
                     'stock': stock,
                     'action': 'sell',
                     'price': current_price,
-                    'reason': 'stop_loss_reached',
+                    'reason': sell_reason,
                     'return_rate': return_rate,
                     'time': current_time,
-                    'stop_loss_ratio': dynamic_stop_loss
+                    'stop_loss_ratio': dynamic_stop_loss,
+                    'sector': sector,
+                    'detailed_reason': detailed_reason
                 }
                 sell_decisions.append(sell_decision)
                 
@@ -453,23 +613,38 @@ class StrategyDecision:
                 highest_price = holding['highest_price']
                 
                 # 对于不同情况，使用不同的跟踪止损比例
-                if return_rate >= 0.05:  # 盈利5%以上
-                    trailing_stop_ratio = min(config.TRAILING_STOP_RATIO * 1.5, 0.05)  # 跟踪止损比例提高到3%，最高5%
+                if is_likely_limit_up:
+                    # 可能涨停的股票，使用更宽松的跟踪止损
+                    trailing_stop_ratio = min(config.TRAILING_STOP_RATIO * 2, 0.06)  # 最高6%
+                elif return_rate >= 0.05:  # 盈利5%以上
+                    trailing_stop_ratio = min(config.TRAILING_STOP_RATIO * 1.5, 0.05)  # 最高5%
                 else:
                     trailing_stop_ratio = config.TRAILING_STOP_RATIO
                 
                 # 检查是否达到跟踪止损条件
                 if (highest_price - current_price) / highest_price >= trailing_stop_ratio:
                     # 达到跟踪止损比例，卖出
+                    # 详细的卖出理由
+                    detailed_reason = [
+                        f"跟踪止损触发(从最高价回撤{(highest_price - current_price)/highest_price:.2%} >= {trailing_stop_ratio:.2%})",
+                        f"最高价:{highest_price:.2f}, 当前价:{current_price:.2f}",
+                        f"属于板块({sector})"
+                    ]
+                    
+                    # 构建完整的卖出理由
+                    sell_reason = "; ".join(detailed_reason)
+                    
                     sell_decision = {
                         'stock': stock,
                         'action': 'sell',
                         'price': current_price,
-                        'reason': 'trailing_stop_reached',
+                        'reason': sell_reason,
                         'return_rate': return_rate,
                         'time': current_time,
                         'trailing_stop_ratio': trailing_stop_ratio,
-                        'highest_price': highest_price
+                        'highest_price': highest_price,
+                        'sector': sector,
+                        'detailed_reason': detailed_reason
                     }
                     sell_decisions.append(sell_decision)
                     
@@ -478,19 +653,40 @@ class StrategyDecision:
             
             # 6. 尾盘处理：14:55后，对于盈利的股票可以考虑卖出锁定利润
             if current_hour == 14 and current_minute >= 55 and return_rate > 0:
-                # 尾盘卖出，锁定利润
-                sell_decision = {
-                    'stock': stock,
-                    'action': 'sell',
-                    'price': current_price,
-                    'reason': 'end_of_day_profit_taking',
-                    'return_rate': return_rate,
-                    'time': current_time
-                }
-                sell_decisions.append(sell_decision)
-                
-                logger.info(f"卖出决策：{sell_decision}")
-                continue
+                # 对于可能涨停的股票，稍微放宽条件
+                if is_likely_limit_up:
+                    # 可能涨停的股票，允许持有到收盘
+                    logger.info(f"可能涨停的股票{stock}，持有到收盘")
+                    # 更新持仓中的最高价
+                    if current_price > holding.get('highest_price', 0):
+                        self.holdings[stock]['highest_price'] = current_price
+                    continue
+                else:
+                    # 普通股票，尾盘卖出锁定利润
+                    # 详细的卖出理由
+                    detailed_reason = [
+                        "尾盘锁定利润",
+                        f"当前收益率({return_rate:.2%})",
+                        f"属于板块({sector})"
+                    ]
+                    
+                    # 构建完整的卖出理由
+                    sell_reason = "; ".join(detailed_reason)
+                    
+                    sell_decision = {
+                        'stock': stock,
+                        'action': 'sell',
+                        'price': current_price,
+                        'reason': sell_reason,
+                        'return_rate': return_rate,
+                        'time': current_time,
+                        'sector': sector,
+                        'detailed_reason': detailed_reason
+                    }
+                    sell_decisions.append(sell_decision)
+                    
+                    logger.info(f"卖出决策：{sell_decision}")
+                    continue
             
             # 更新持仓中的最高价
             if current_price > holding.get('highest_price', 0):
@@ -547,8 +743,22 @@ class StrategyDecision:
                         # 部分卖出，减少持仓数量
                         self.holdings[stock]['quantity'] -= quantity
             
+            # 增强交易记录，添加更多详细信息
+            enhanced_record = {
+                **result,
+                'holdings_status': self.holdings.copy(),
+                'total_holdings_count': len(self.holdings),
+                'timestamp': pd.Timestamp.now()
+            }
+            
             # 记录交易
-            self.trade_records.append(result)
+            self.trade_records.append(enhanced_record)
+            
+            # 记录到日志
+            if action == 'buy':
+                logger.info(f"买入交易记录：股票={stock}, 价格={price}, 数量={quantity}, 时间={time}, 理由={result.get('reason', '模型预测')}, 板块={result.get('sector', '未知')}")
+            else:
+                logger.info(f"卖出交易记录：股票={stock}, 价格={price}, 数量={quantity}, 时间={time}, 理由={result.get('reason', '止盈止损')}, 收益率={result.get('return_rate', 0):.4f}, 板块={result.get('sector', '未知')}")
     
     def get_holdings(self):
         """获取当前持仓"""
