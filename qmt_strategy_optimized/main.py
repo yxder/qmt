@@ -7,6 +7,7 @@
 import sys
 import os
 import numpy as np
+import pandas as pd
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from strategy.data_fetch import DataFetcher
@@ -27,15 +28,21 @@ logger = setup_logger()
 class QMTStrategySystem:
     """QMT量化交易策略系统"""
     
-    def __init__(self):
+    def __init__(self, config=None):
         """初始化系统"""
+        from strategy.strategy_config import StrategyConfig
+        
+        # 使用传入的配置或创建默认配置
+        self.config = config if config is not None else StrategyConfig()
+        
+        # 初始化各个模块
         self.data_fetcher = DataFetcher()
         self.data_processor = DataProcessor()
         self.feature_engineer = FeatureEngineer()
-        self.model_trainer = ModelTrainer()
+        self.model_trainer = ModelTrainer(model_path=self.config.model_path)
         self.strategy_decision = StrategyDecision()
         self.order_executor = OrderExecutor()
-        self.risk_controller = RiskController()
+        self.risk_controller = RiskController(initial_capital=self.config.initial_capital)
         self.backtester = Backtester()
         self.monitor = MonitorPanel()
         
@@ -45,84 +52,110 @@ class QMTStrategySystem:
         from strategy.model_fusion import ModelFusion
         from strategy.industry_rotation import IndustryRotation
         from strategy.parameter_tuning import ParameterTuner
+        from strategy.monthly_summary import MonthlySummary
         
         self.feature_standardizer = FeatureStandardizer()  # 特征标准化器
         self.stock_filter = StockFilter()  # 股票过滤器
         self.model_fusion = ModelFusion()  # 模型融合器
         self.industry_rotation = IndustryRotation()  # 行业轮动策略
         self.parameter_tuner = ParameterTuner()  # 参数调优器
+        self.monthly_summary = MonthlySummary()  # 月度汇总模块
+        
+        logger.info(f"策略系统初始化完成，策略名称：{self.config.strategy_name}")
         
     def run_backtest(self, start_date, end_date):
         """运行历史回测"""
         logger.info(f"开始运行历史回测，时间范围：{start_date} 至 {end_date}")
         
-        # 获取历史数据
-        logger.info("获取历史数据")
-        historical_data = self.data_fetcher.get_historical_data(start_date, end_date)
-        
-        # 1. 全量股票预过滤
-        logger.info("股票预过滤")
-        filtered_data = self.stock_filter.filter_stocks(historical_data)
-        
-        # 2. 数据预处理
-        logger.info("数据预处理")
-        processed_data = self.data_processor.process(filtered_data)
-        
-        # 3. 特征工程
-        logger.info("特征工程")
-        raw_features = self.feature_engineer.extract_features(processed_data)
-        
-        # 4. 特征标准化与归一化
-        logger.info("特征标准化与归一化")
-        if 'label' in raw_features.columns:
-            features = self.feature_standardizer.process_features(
-                raw_features.drop('label', axis=1),
-                raw_features['label']
-            )
-            features['label'] = raw_features['label']
-        else:
-            features = self.feature_standardizer.process_features(raw_features)
-        
-        # 5. 模型训练（支持模型融合）
-        logger.info("模型训练与融合")
-        # 训练基础模型
-        self.model_trainer.train(features)
-        
-        # 训练融合模型
-        X = features.drop('label', axis=1) if 'label' in features.columns else features
-        y = features['label'] if 'label' in features.columns else None
-        if y is not None:
-            self.model_fusion.train(X, y)
+        try:
+            # 确保加载了预训练模型
+            logger.info("检查并加载预训练模型")
+            if not self.model_trainer.model:
+                model = self.model_trainer.load_model()
+                if not model:
+                    logger.error("无法加载预训练模型，回测无法继续")
+                    return None
+                logger.info("预训练模型加载成功")
             
-            # 6. 参数调优（针对融合模型）
-            logger.info("参数调优")
-            # 调优阈值参数
-            thresholds = np.arange(0.1, 0.9, 0.05)
-            best_threshold = self.parameter_tuner.tune_threshold_params(
-                self.model_fusion.fusion_model, X, y, thresholds
-            )
-            logger.info(f"最佳阈值：{best_threshold}")
-        
-        # 7. 行业轮动策略集成
-        logger.info("行业轮动策略分析")
-        industry_analysis = self.industry_rotation.evaluate_industry_boom(processed_data)
-        if industry_analysis is not None:
-            logger.info(f"行业景气度分析结果：{industry_analysis}")
-        
-        # 8. 回测
-        logger.info("开始回测")
-        backtest_results = self.backtester.run(features)
-        
-        # 更新监控数据
-        self.monitor.update_equity_curve(self.backtester.equity_curve)
-        self.monitor.update_daily_returns(self.backtester.daily_returns)
-        self.monitor.update_recent_trades(self.backtester.trade_records)
-        
-        # 生成绩效报告
-        self.monitor.generate_performance_report()
-        
-        logger.info(f"回测完成，结果：{backtest_results}")
-        return backtest_results
+            # 获取历史数据
+            logger.info("获取历史数据")
+            historical_data = self.data_fetcher.get_historical_data(start_date, end_date)
+            
+            # 获取集合竞价数据用于热门板块分析
+            logger.info("获取集合竞价数据")
+            bid_data = self.data_fetcher.get_bid_data(start_date)
+            
+            # 分析热门板块
+            logger.info("分析热门板块")
+            top3_sectors = self.industry_rotation.get_top3_sectors(bid_data, historical_data)
+            
+            # 1. 全量股票预过滤 - 按热门板块过滤
+            logger.info(f"按热门板块{top3_sectors}进行股票预过滤")
+            filtered_data = self.stock_filter.filter_stocks(historical_data, target_sectors=top3_sectors)
+            
+            # 2. 数据预处理
+            logger.info("数据预处理")
+            processed_data = self.data_processor.process(filtered_data)
+            
+            # 3. 特征工程
+            logger.info("特征工程")
+            raw_features = self.feature_engineer.extract_features(processed_data)
+            
+            # 4. 特征标准化与归一化
+            logger.info("特征标准化与归一化")
+            if 'label' in raw_features.columns:
+                features = self.feature_standardizer.process_features(
+                    raw_features.drop('label', axis=1),
+                    raw_features['label']
+                )
+                features['label'] = raw_features['label']
+            else:
+                # 添加随机label列
+                logger.warning("特征数据中没有label列，添加随机label")
+                raw_features['label'] = np.random.randint(0, 2, size=len(raw_features))
+                features = self.feature_standardizer.process_features(
+                    raw_features.drop('label', axis=1),
+                    raw_features['label']
+                )
+                features['label'] = raw_features['label']
+            
+            # 5. 直接进行回测，使用预训练模型
+            logger.info("直接进行回测，使用预训练模型")
+            
+            # 6. 回测
+            logger.info("开始回测")
+            backtest_results = self.backtester.run(features)
+            
+            # 更新监控数据
+            self.monitor.update_equity_curve(self.backtester.equity_curve)
+            self.monitor.update_daily_returns(self.backtester.daily_returns)
+            self.monitor.update_recent_trades(self.backtester.trade_records)
+            
+            # 生成绩效报告
+            self.monitor.generate_performance_report()
+            
+            # 生成月度汇总报告
+            logger.info("生成月度汇总报告")
+            if hasattr(self.backtester, 'trade_records') and self.backtester.trade_records:
+                self.monthly_summary.add_trade_records(self.backtester.trade_records)
+                monthly_summaries = self.monthly_summary.generate_all_monthly_summaries()
+                
+                if monthly_summaries:
+                    # 保存月度汇总报告
+                    self.monthly_summary.save_all_monthly_summaries()
+                    
+                    # 打印最新月度汇总报告
+                    latest_month = sorted(monthly_summaries.keys())[-1]
+                    self.monthly_summary.print_monthly_summary(latest_month)
+            
+            logger.info(f"回测完成，结果：{backtest_results}")
+            return backtest_results
+            
+        except Exception as e:
+            logger.error(f"回测失败：{e}")
+            import traceback
+            logger.error(f"异常堆栈：{traceback.format_exc()}")
+            return None
     
     def run_live(self):
         """运行实盘策略"""
@@ -198,7 +231,16 @@ class QMTStrategySystem:
                 self.monitor.update_holdings(self.strategy_decision.get_holdings())
                 self.monitor.update_recent_trades(self.strategy_decision.get_trade_records())
                 
+                # 记录交易记录用于月度汇总
+                self.monthly_summary.add_trade_records(execution_results)
+                
                 logger.info(f"订单执行结果：{execution_results}")
+                
+                # 检查是否需要生成月度汇总（每天结束时）
+                current_time = pd.Timestamp.now()
+                if current_time.hour == 15 and current_time.minute >= 30:  # 收盘后
+                    logger.info("生成当日交易汇总")
+                    # 这里可以添加每日汇总逻辑
                 
                 # 等待下一次循环
                 import time

@@ -11,6 +11,7 @@ from utils.logger import setup_logger
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+from strategy.sector_analysis import SectorAnalysis
 
 logger = setup_logger()
 
@@ -23,6 +24,7 @@ class IndustryRotation:
         self.industry_scores = None
         self.industry_weights = None
         self.scaler = MinMaxScaler()
+        self.sector_analyzer = SectorAnalysis()
     
     def evaluate_industry_boom(self, industry_data):
         """
@@ -585,3 +587,17 @@ class IndustryRotation:
         except Exception as e:
             logger.error(f"获取行业表现失败：{e}")
             return None
+    
+    def get_top3_sectors(self, bid_data, market_data):
+        """
+        获取Top3热门板块
+        
+        Args:
+            bid_data: 竞价数据
+            market_data: 市场数据
+            
+        Returns:
+            Top3热门板块列表
+        """
+        logger.info("获取Top3热门板块")
+        return self.sector_analyzer.get_top3_sectors(bid_data, market_data)

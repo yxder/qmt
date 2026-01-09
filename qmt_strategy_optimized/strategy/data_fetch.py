@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 数据获取模块
-支持从xtquant实时服务和QMT本地数据目录两种方式获取数据
+支持从xtquant实时服务、QMT本地数据目录和pandas_datareader数据源获取数据
 """
 
 import os
@@ -14,6 +14,14 @@ from xtquant import xtdata
 from utils.logger import setup_logger
 from utils.qmt_data_reader import QMTHistoricalDataReader, get_qmt_data_dir
 import config
+
+# 尝试导入pandas_datareader
+try:
+    import pandas_datareader as pdr
+    from pandas_datareader import data as web
+    pandas_datareader_available = True
+except ImportError:
+    pandas_datareader_available = False
 
 logger = setup_logger()
 
@@ -92,6 +100,98 @@ class DataFetcher:
         return ["000001.SZ", "000002.SZ", "600000.SH", "600001.SH", "600002.SH", 
                 "000004.SZ", "000005.SZ", "600003.SH", "600004.SH", "600005.SH"]
     
+    def _get_pandas_datareader_historical(self, start_date, end_date, market: str = "ALL") -> dict:
+        """
+        从pandas_datareader获取历史数据
+        
+        Args:
+            start_date: 开始日期，格式为YYYYMMDD
+            end_date: 结束日期，格式为YYYYMMDD
+            market: 市场类型，可选值：'SH'（上海）、'SZ'（深圳）、'ALL'（全部）
+            
+        Returns:
+            字典格式的历史数据，{stock_code: DataFrame}
+        """
+        logger.info("从pandas_datareader获取历史数据，时间范围：{} 至 {}，市场：{}".format(start_date, end_date, market))
+        
+        if not pandas_datareader_available:
+            logger.warning("pandas_datareader库未安装，无法从pandas_datareader获取数据")
+            return {}
+        
+        try:
+            # 转换日期格式
+            start = pd.to_datetime(str(start_date))
+            end = pd.to_datetime(str(end_date))
+            
+            # 使用示例股票列表进行测试，实际应用中可以从配置或其他来源获取
+            # 注意：Yahoo Finance的股票代码格式与国内市场不同，需要转换
+            sample_stocks = {
+                '600000.SH': '600000.SS',  # 浦发银行
+                '600004.SH': '600004.SS',  # 白云机场
+                '600006.SH': '600006.SS',  # 东风汽车
+                '600009.SH': '600009.SS',  # 上海机场
+                '600016.SH': '600016.SS',  # 民生银行
+                '600028.SH': '600028.SS',  # 中国石化
+                '600036.SH': '600036.SS',  # 招商银行
+                '600048.SH': '600048.SS',  # 保利发展
+                '600104.SH': '600104.SS',  # 上汽集团
+                '600111.SH': '600111.SS'   # 北方稀土
+            }
+            
+            all_data = {}
+            
+            # 逐个获取股票数据
+            for local_code, yahoo_code in sample_stocks.items():
+                logger.info(f"从pandas_datareader获取股票 {local_code} 的历史数据")
+                
+                try:
+                    # 使用Yahoo Finance获取数据
+                    df = web.get_data_yahoo(yahoo_code, start=start, end=end)
+                    
+                    if df.empty:
+                        logger.warning(f"股票 {local_code} 没有历史数据")
+                        continue
+                    
+                    # 转换数据格式，使其与原有系统兼容
+                    df = df.reset_index()
+                    df = df.rename(columns={
+                        'Date': 'trade_date',
+                        'Open': 'open',
+                        'High': 'high',
+                        'Low': 'low',
+                        'Close': 'close',
+                        'Volume': 'volume'
+                    })
+                    
+                    # 添加amount列（成交额）
+                    df['amount'] = df['close'] * df['volume']
+                    
+                    # 添加stock_code列
+                    df['stock_code'] = local_code
+                    
+                    # 保留必要的列
+                    df = df[['trade_date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'stock_code']]
+                    
+                    # 将trade_date转换为YYYYMMDD格式的字符串
+                    df['trade_date'] = df['trade_date'].dt.strftime('%Y%m%d')
+                    
+                    # 添加到结果中
+                    all_data[local_code] = df
+                    logger.info(f"成功获取股票 {local_code} 的历史数据，共 {len(df)} 条记录")
+                    
+                except Exception as e:
+                    logger.warning(f"获取股票 {local_code} 数据失败: {e}")
+                    continue
+            
+            logger.info("从pandas_datareader获取历史数据完成，共{}只股票".format(len(all_data)))
+            return all_data
+            
+        except Exception as e:
+            logger.error("从pandas_datareader获取历史数据失败: {}".format(e))
+            import traceback
+            logger.error(f"异常堆栈：{traceback.format_exc()}")
+            return {}
+    
     def get_historical_data(self, start_date, end_date, market: str = "ALL", batch_size: int = 50):
         """
         获取历史数据
@@ -116,6 +216,7 @@ class DataFetcher:
         else:
             markets = [market]
         
+        # 尝试从本地数据目录和xtdata获取数据
         for mkt in markets:
             logger.info("获取{}市场数据".format(mkt))
             
@@ -173,9 +274,13 @@ class DataFetcher:
                         continue
                 except Exception as e:
                     logger.warning("从xtdata获取{}市场数据失败: {}".format(mkt, e))
-            
-            # 未获取到数据，跳过该市场
-            logger.warning(f"未能获取{market}市场的数据，跳过该市场")
+        
+        # 如果从本地和xtdata都没有获取到数据，尝试从pandas_datareader获取
+        if not all_data:
+            logger.info("从本地和xtdata都没有获取到数据，尝试从pandas_datareader获取")
+            pandas_data = self._get_pandas_datareader_historical(start_date, end_date, market)
+            if pandas_data:
+                all_data.update(pandas_data)
         
         # 保存历史数据到本地
         self._save_historical_data(all_data, start_date, end_date)
@@ -326,11 +431,12 @@ class DataFetcher:
         logger.info("获取指定日期的集合竞价数据：{}".format(date))
         
         bid_data = {}
+        final_bid_data = {}
         
         # 尝试从xtdata获取集合竞价数据
         if self.xtdata_available:
             try:
-                # 使用xtdata的get_market_data获取1分钟K线数据，筛选9:15-9:25的数据
+                # 1. 获取1分钟K线数据，包含9:15-9:25的竞价数据
                 bid_data = xtdata.get_market_data(
                     field_list=['open', 'high', 'low', 'close', 'volume', 'amount'],
                     stock_list=self.stock_list,
@@ -338,16 +444,78 @@ class DataFetcher:
                     start_time='{} 09:15:00'.format(date),
                     end_time='{} 09:25:00'.format(date)
                 )
-                logger.info("从xtdata获取到集合竞价数据，共{}只股票".format(len(bid_data)))
+                logger.info("从xtdata获取到集合竞价1分钟K线数据，共{}只股票".format(len(bid_data)))
+                
+                # 2. 获取9:26的最终竞价数据（使用日线数据，包含竞价结果）
+                final_bid_data = xtdata.get_market_data(
+                    field_list=['pre_close', 'open', 'high', 'low', 'close', 'volume', 'amount'],
+                    stock_list=self.stock_list,
+                    period='1d',
+                    start_time=date,
+                    end_time=date
+                )
+                logger.info("从xtdata获取到9:26最终竞价数据，共{}只股票".format(len(final_bid_data)))
+                
             except Exception as e:
                 logger.warning("从xtdata获取集合竞价数据失败: {}".format(e))
         
-        # 如果xtdata获取失败，返回空数据
-        if not bid_data:
-            logger.warning("未能获取集合竞价数据，返回空数据")
-            bid_data = {}
+        # 处理并合并竞价数据
+        processed_bid_data = {}
         
-        return bid_data
+        # 遍历所有股票
+        all_stocks = set(list(bid_data.keys()) + list(final_bid_data.keys()))
+        
+        for stock_code in all_stocks:
+            try:
+                stock_bid_data = None
+                stock_final_data = None
+                
+                # 获取该股票的竞价数据
+                if stock_code in bid_data:
+                    stock_bid_data = bid_data[stock_code]
+                
+                # 获取该股票的最终竞价数据
+                if stock_code in final_bid_data:
+                    stock_final_data = final_bid_data[stock_code]
+                
+                # 创建处理后的数据
+                if isinstance(stock_final_data, pd.DataFrame) and not stock_final_data.empty:
+                    # 使用最终竞价数据作为基础
+                    processed_df = stock_final_data.copy()
+                    
+                    # 添加股票代码
+                    processed_df['stock_code'] = stock_code
+                    
+                    # 计算竞价相关指标
+                    if 'pre_close' in processed_df.columns and 'open' in processed_df.columns:
+                        # 竞价涨幅
+                        processed_df['bid_change'] = (processed_df['open'] - processed_df['pre_close']) / processed_df['pre_close']
+                        
+                        # 竞价强度（涨幅的绝对值）
+                        processed_df['bid_intensity'] = abs(processed_df['bid_change'])
+                    
+                    # 计算竞价量比（假设昨日成交量为平均成交量）
+                    if 'volume' in processed_df.columns:
+                        # 简单处理：使用成交量作为竞价量，实际应用中应使用昨日成交量计算量比
+                        processed_df['bid_volume_ratio'] = processed_df['volume'] / 1000000  # 简化处理，实际应基于昨日成交量
+                    
+                    # 添加竞价结束时间
+                    processed_df['bid_end_time'] = pd.Timestamp('{} 09:26:00'.format(date))
+                    
+                    # 添加到结果中
+                    processed_bid_data[stock_code] = processed_df
+                
+            except Exception as e:
+                logger.warning("处理股票{}的竞价数据失败: {}".format(stock_code, e))
+                continue
+        
+        # 如果处理后的数据为空，返回原始数据
+        if not processed_bid_data:
+            logger.warning("未能处理集合竞价数据，返回原始数据")
+            return bid_data
+        
+        logger.info("集合竞价数据处理完成，共{}只股票".format(len(processed_bid_data)))
+        return processed_bid_data
     
     def get_market_sentiment_data(self, date):
         """获取指定日期的市场情绪数据"""

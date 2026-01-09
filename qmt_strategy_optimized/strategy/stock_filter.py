@@ -8,6 +8,7 @@
 import pandas as pd
 import numpy as np
 from utils.logger import setup_logger
+from strategy.sector_analysis import SectorAnalysis
 
 logger = setup_logger()
 
@@ -18,14 +19,16 @@ class StockFilter:
         """初始化股票过滤器"""
         logger.info("初始化股票过滤器")
         self.filter_stats = {}
+        self.sector_analyzer = SectorAnalysis()
     
-    def filter_stocks(self, stocks_data, config=None):
+    def filter_stocks(self, stocks_data, config=None, target_sectors=None):
         """
         对股票进行预过滤
         
         Args:
             stocks_data: 股票数据
             config: 过滤配置
+            target_sectors: 目标板块列表，只保留这些板块的股票
             
         Returns:
             过滤后的股票数据
@@ -85,8 +88,17 @@ class StockFilter:
         
         config = config or default_config
         
+        # 1. 板块过滤（在其他过滤之前执行，减少后续计算量）
         original_count = len(stocks_data)
-        filtered_stocks = stocks_data.copy()
+        if target_sectors and len(target_sectors) > 0:
+            logger.info(f"按目标板块{target_sectors}过滤股票")
+            filtered_stocks = self.sector_analyzer.filter_stocks_by_sectors(stocks_data, target_sectors)
+            sector_filtered_count = original_count - len(filtered_stocks)
+            self.filter_stats['sector_filtered'] = sector_filtered_count
+            original_count = len(filtered_stocks)
+            logger.info(f"板块过滤完成，过滤掉{sector_filtered_count}只股票")
+        else:
+            filtered_stocks = stocks_data.copy()
         
         # 记录过滤前的股票数量
         self.filter_stats['original_count'] = original_count
@@ -102,15 +114,16 @@ class StockFilter:
                 self.filter_stats['north_excluded'] = original_count - len(filtered_stocks)
                 original_count = len(filtered_stocks)
             
-            # 2. 排除ST股票
+            # 2. 排除ST股票 - 仅对DataFrame格式数据有效，因为字典格式（xtdata）没有股票名称信息
             if config.get('exclude_st', True):
                 if isinstance(filtered_stocks, pd.DataFrame):
                     if 'name' in filtered_stocks.columns:
                         filtered_stocks = filtered_stocks[~filtered_stocks['name'].str.contains('ST')]
-                elif isinstance(filtered_stocks, dict):
-                    filtered_stocks = {k: v for k, v in filtered_stocks.items() if isinstance(v, dict) and 'name' in v and 'ST' not in v['name']}
-                self.filter_stats['st_excluded'] = original_count - len(filtered_stocks)
-                original_count = len(filtered_stocks)
+                        self.filter_stats['st_excluded'] = original_count - len(filtered_stocks)
+                        original_count = len(filtered_stocks)
+                else:
+                    # 对于字典格式数据，跳过ST过滤（没有股票名称信息）
+                    self.filter_stats['st_excluded'] = 0
             
             # 3. 流动性过滤
             if isinstance(filtered_stocks, pd.DataFrame):

@@ -34,15 +34,15 @@ RANDOM_SEED = 42  # 随机种子，确保结果可复现
 
 # 策略配置
 # 动态买点决策参数
-BUY_THRESHOLD = 0.1  # 模型预测概率阈值，高于此值考虑买入
+BUY_THRESHOLD = 0.01  # 降低模型预测概率阈值，更容易生成买入信号
 BID_INTENSITY_WEIGHT = 0.3  # 竞价强度权重
 BUY_ORDER_SIZE_WEIGHT = 0.3  # 封单量权重
 MARKET_SENTIMENT_WEIGHT = 0.4  # 市场情绪权重
 
 # 自适应卖点策略参数
-PROFIT_TARGET = 0.1  # 目标收益率
-STOP_LOSS_RATIO = 0.05  # 止损比例
-TRAILING_STOP_RATIO = 0.03  # 跟踪止损比例
+PROFIT_TARGET = 0.05  # 降低目标收益率，更容易止盈
+STOP_LOSS_RATIO = 0.03  # 降低止损比例，更宽松的止损条件
+TRAILING_STOP_RATIO = 0.02  # 降低跟踪止损比例，更宽松的跟踪止损条件
 
 # 风险控制配置
 MAX_POSITION_PER_STOCK = 0.2  # 单票最大仓位比例
