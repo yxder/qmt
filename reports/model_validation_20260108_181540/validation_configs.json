@@ -1,0 +1,28 @@
+{
+  "environment": {
+    "python_version": "3.13.9 (tags/v3.13.9:8183fa5, Oct 14 2025, 14:09:13) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu_cores": 16,
+    "memory_gb": 31.490116119384766,
+    "process_id": 44864
+  },
+  "model_config": {
+    "model_type": "xgboost",
+    "model_path": "models/trained_models/",
+    "random_state": 42,
+    "feature_num": 10
+  },
+  "validation_config": {
+    "start_date": "20251101",
+    "end_date": "20251231",
+    "market": "ALL",
+    "use_local_data": true
+  },
+  "benchmarks": {
+    "accuracy": 0.9,
+    "precision": 0.3,
+    "recall": 0.2,
+    "f1_score": 0.25,
+    "roc_auc": 0.6
+  }
+}

@@ -1,0 +1,35 @@
+{
+    "performance_metrics": {
+        "total_pnl": 15000,
+        "annual_return": 1.5548220848110992,
+        "sharpe_ratio": 15.195610991552577,
+        "max_drawdown": -0.0020000000000000343,
+        "win_rate": 1.0
+    },
+    "equity_curve": [
+        1000000,
+        1005000,
+        1010000,
+        1008000,
+        1015000
+    ],
+    "recent_trades": [
+        {
+            "stock": "stock_000",
+            "date": "2025-12-01 00:00:00",
+            "action": "buy",
+            "price": 10.5,
+            "quantity": 100,
+            "pnl": 50.0
+        },
+        {
+            "stock": "stock_001",
+            "date": "2025-12-02 00:00:00",
+            "action": "buy",
+            "price": 15.3,
+            "quantity": 200,
+            "pnl": 140.0
+        }
+    ],
+    "generated_time": "2026-01-08 11:59:53.060345"
+}

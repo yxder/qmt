@@ -1,0 +1,7 @@
+,total_stocks,total_decisions,total_approved,total_predictions,correct_predictions,accuracy,total_positive_predictions,total_positive_labels,avg_probability,avg_return,volatility
+normal,10,0,0,0,0,0,0,0,0,0,0
+market_crash,10,0,0,0,0,0,0,0,0,0,0
+market_rally,10,0,0,0,0,0,0,0,0,0,0
+stock_crash,10,0,0,0,0,0,0,0,0,0,0
+stock_rally,10,0,0,0,0,0,0,0,0,0,0
+high_volatility,10,0,0,0,0,0,0,0,0,0,0

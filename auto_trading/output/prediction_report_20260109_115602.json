@@ -1,0 +1,14 @@
+{
+  "prediction_time": "2026-01-09T11:56:02.874280",
+  "total_stocks": 20,
+  "potential_limit_up": 0,
+  "average_probability": NaN,
+  "average_confidence": NaN,
+  "top_stocks": [],
+  "model_info": {
+    "model_path": "auto_trading/models\\simple_rf_model_20260109_115555.joblib",
+    "model_file": "simple_rf_model_20260109_115555.joblib",
+    "model_version": "1.0",
+    "scaler_path": "auto_trading/models\\simple_scaler_20260109_115555.joblib"
+  }
+}
