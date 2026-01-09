@@ -304,14 +304,15 @@ class StrategyDecision:
             # 检查是否达到止损条件
             if return_rate <= -config.STOP_LOSS_RATIO:
                 # 达到止损比例，止损卖出
-                sell_decisions.append({
+                sell_decision = {
                     'stock': stock,
                     'action': 'sell',
                     'price': current_price,
                     'reason': 'stop_loss_reached',
                     'return_rate': return_rate,
                     'time': current_time
-                })
+                }
+                sell_decisions.append(sell_decision)
                 
                 logger.info(f"卖出决策：{sell_decision}")
                 continue
@@ -321,14 +322,15 @@ class StrategyDecision:
                 highest_price = holding['highest_price']
                 if (highest_price - current_price) / highest_price >= config.TRAILING_STOP_RATIO:
                     # 达到跟踪止损比例，卖出
-                    sell_decisions.append({
+                    sell_decision = {
                         'stock': stock,
                         'action': 'sell',
                         'price': current_price,
                         'reason': 'trailing_stop_reached',
                         'return_rate': return_rate,
                         'time': current_time
-                    })
+                    }
+                    sell_decisions.append(sell_decision)
                     
                     logger.info(f"卖出决策：{sell_decision}")
                     continue

@@ -108,45 +108,46 @@ class Backtester:
             logger.info(f"移除非数值特征后，保留{len(train_features.columns)}个数值特征用于模型训练")
             
             # 检查是否需要训练模型
-            if self.need_train_model or self.model_trainer.model is None:
-                logger.info("开始训练模型用于回测")
-                
-                # 训练简单的随机森林模型
-                from sklearn.ensemble import RandomForestClassifier
-                simple_model = RandomForestClassifier(
-                    n_estimators=100,
-                    max_depth=10,
-                    random_state=42,
-                    n_jobs=-1,
-                    class_weight='balanced'  # 处理不平衡数据
-                )
-                
-                # 训练模型
-                simple_model.fit(train_features, labels)
-                
-                # 更新模型训练器的模型
-                self.model_trainer.model = simple_model
-                logger.info("模型训练完成")
-            else:
-                logger.info("使用已加载的模型进行回测")
-                
-                # 检查模型是否能正常预测
-                try:
-                    test_pred = self.model_trainer.model.predict(train_features.iloc[:5])
-                    logger.info(f"模型测试预测结果：{test_pred}")
-                except Exception as e:
-                    logger.error(f"模型预测测试失败，重新训练模型：{e}")
+            if self.model_trainer.model is None:
+                logger.info("模型不存在，尝试加载预训练模型")
+                model = self.model_trainer.load_model()
+                if model is None:
+                    logger.warning("预训练模型加载失败，将在回测时自动训练简单模型")
+                    # 训练简单的随机森林模型
                     from sklearn.ensemble import RandomForestClassifier
                     simple_model = RandomForestClassifier(
                         n_estimators=100,
                         max_depth=10,
                         random_state=42,
                         n_jobs=-1,
-                        class_weight='balanced'
+                        class_weight='balanced'  # 处理不平衡数据
                     )
+                    
+                    # 训练模型
                     simple_model.fit(train_features, labels)
+                    
+                    # 更新模型训练器的模型
                     self.model_trainer.model = simple_model
-                    logger.info("重新训练模型完成")
+                    logger.info("模型训练完成")
+                else:
+                    logger.info("使用已加载的预训练模型进行回测")
+            else:
+                logger.info("使用已加载的模型进行回测")
+            
+            # 检查模型是否能正常预测
+            try:
+                test_pred = self.model_trainer.model.predict(train_features.iloc[:5])
+                logger.info(f"模型测试预测结果：{test_pred}")
+                # 检查模型是否支持概率预测
+                if hasattr(self.model_trainer.model, 'predict_proba'):
+                    test_prob = self.model_trainer.model.predict_proba(train_features.iloc[:5])
+                    logger.info(f"模型测试预测概率：{test_prob}")
+                else:
+                    logger.warning("模型不支持概率预测，这可能导致预测概率全为0")
+            except Exception as e:
+                logger.error(f"模型预测测试失败：{e}")
+                import traceback
+                logger.error(f"异常堆栈：{traceback.format_exc()}")
             
             # 模拟交易过程
             self._simulate_trading(features)
@@ -294,9 +295,33 @@ class Backtester:
         # 只保留数值特征
         numeric_features = feature_cols.select_dtypes(include=[np.number])
         logger.info(f"过滤后用于预测的数值特征数量：{len(numeric_features.columns)}")
+        logger.info(f"数值特征示例：{numeric_features.head(2)}")
+        
+        # 检查模型期望的特征数量
+        try:
+            # 获取模型期望的特征数量
+            if hasattr(self.model_trainer.model, 'n_features_in_'):
+                expected_features = self.model_trainer.model.n_features_in_
+                logger.info(f"模型期望的特征数量：{expected_features}")
+                
+                # 如果特征数量不匹配，只使用前N个特征
+                if len(numeric_features.columns) > expected_features:
+                    logger.warning(f"特征数量不匹配，模型期望{expected_features}个特征，但提供了{len(numeric_features.columns)}个，只使用前{expected_features}个特征")
+                    # 使用前N个特征
+                    numeric_features = numeric_features.iloc[:, :expected_features]
+                    logger.info(f"调整后用于预测的特征数量：{len(numeric_features.columns)}")
+        except Exception as e:
+            logger.error(f"获取模型特征数量失败：{e}")
         
         # 使用模型进行预测
-        return self.model_trainer.predict(numeric_features)
+        predictions = self.model_trainer.predict(numeric_features)
+        
+        # 添加调试信息
+        if predictions:
+            logger.info(f"预测结果：{predictions}")
+            logger.info(f"预测概率最小值：{predictions['probabilities'].min()}, 最大值：{predictions['probabilities'].max()}, 平均值：{predictions['probabilities'].mean()}")
+        
+        return predictions
     
     def _execute_decisions(self, date, decisions, daily_features):
         """执行交易决策"""
@@ -600,6 +625,88 @@ class Backtester:
             if n_days > 0:
                 avg_daily_trades = len(self.trade_records) / n_days
                 self.backtest_results['avg_daily_trades'] = avg_daily_trades
+            
+            # 行业配置效果分析
+            self.backtest_results['industry_analysis'] = self._analyze_industry_allocation()
+    
+    def _analyze_industry_allocation(self):
+        """
+        分析行业配置效果
+        
+        Returns:
+            行业配置效果分析
+        """
+        logger.info("分析行业配置效果")
+        
+        try:
+            if not self.trade_records:
+                return {}
+            
+            industry_analysis = {}
+            trade_df = pd.DataFrame(self.trade_records)
+            
+            # 1. 检查交易记录中是否包含行业信息
+            if 'industry' not in trade_df.columns:
+                # 尝试从股票代码获取行业信息
+                logger.warning("交易记录中没有行业信息，尝试从股票代码获取")
+                # 这里可以添加从股票代码获取行业信息的逻辑
+                return industry_analysis
+            
+            # 2. 行业交易分布
+            industry_trade_count = trade_df['industry'].value_counts()
+            industry_analysis['trade_count_by_industry'] = industry_trade_count.to_dict()
+            
+            # 3. 行业收益率分析
+            # 各行业平均收益率
+            industry_avg_return = trade_df.groupby('industry')['return_rate'].mean()
+            industry_analysis['avg_return_by_industry'] = industry_avg_return.to_dict()
+            
+            # 各行业累计收益率
+            industry_total_return = trade_df.groupby('industry')['pnl'].sum()
+            industry_analysis['total_return_by_industry'] = industry_total_return.to_dict()
+            
+            # 各行业胜率
+            industry_win_rate = trade_df.groupby('industry').apply(
+                lambda x: len(x[x['pnl'] > 0]) / len(x) if len(x) > 0 else 0
+            )
+            industry_analysis['win_rate_by_industry'] = industry_win_rate.to_dict()
+            
+            # 4. 行业配置集中度
+            # 前五大行业交易占比
+            top5_industries = industry_trade_count.head(5)
+            industry_analysis['top5_industry_ratio'] = top5_industries.sum() / len(trade_df)
+            
+            # 赫芬达尔-赫希曼指数（HHI）
+            industry_pct = industry_trade_count / len(trade_df)
+            hhi = (industry_pct ** 2).sum()
+            industry_analysis['industry_hhi'] = hhi
+            
+            # 5. 行业表现对比
+            # 最佳表现行业
+            if not industry_avg_return.empty:
+                best_industry = industry_avg_return.idxmax()
+                industry_analysis['best_performing_industry'] = {
+                    'industry': best_industry,
+                    'avg_return': industry_avg_return[best_industry],
+                    'total_return': industry_total_return[best_industry],
+                    'trade_count': industry_trade_count[best_industry]
+                }
+                
+                # 最差表现行业
+                worst_industry = industry_avg_return.idxmin()
+                industry_analysis['worst_performing_industry'] = {
+                    'industry': worst_industry,
+                    'avg_return': industry_avg_return[worst_industry],
+                    'total_return': industry_total_return[worst_industry],
+                    'trade_count': industry_trade_count[worst_industry]
+                }
+            
+            logger.info(f"行业配置效果分析完成：{industry_analysis}")
+            return industry_analysis
+            
+        except Exception as e:
+            logger.error(f"分析行业配置效果失败：{e}")
+            return {}
     
     def _generate_backtest_report(self):
         """生成回测报告"""
@@ -632,15 +739,28 @@ class Backtester:
         """生成完整的回测报告"""
         import os
         import json
+        from datetime import date
         
         # 生成完整报告文件
         report_file = os.path.join(report_dir, f"full_backtest_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json")
+        
+        # 转换trade_records中的日期类型为字符串，以便JSON序列化
+        def convert_trade_records(records):
+            converted = []
+            for record in records:
+                converted_record = record.copy()
+                # 转换日期类型为字符串
+                for key, value in converted_record.items():
+                    if isinstance(value, date) or isinstance(value, pd.Timestamp):
+                        converted_record[key] = value.strftime('%Y-%m-%d')
+                converted.append(converted_record)
+            return converted
         
         full_report = {
             'backtest_results': self.backtest_results,
             'equity_curve': self.equity_curve,
             'daily_returns': self.daily_returns,
-            'trade_records': self.trade_records,
+            'trade_records': convert_trade_records(self.trade_records),
             'risk_parameters': {
                 'initial_capital': self.initial_capital,
                 'commission_rate': self.commission_rate,
@@ -652,7 +772,7 @@ class Backtester:
         }
         
         with open(report_file, 'w') as f:
-            json.dump(full_report, f, indent=4, ensure_ascii=False)
+            json.dump(full_report, f, indent=4, ensure_ascii=False, default=str)
         
         logger.info(f"完整回测报告保存成功：{report_file}")
     

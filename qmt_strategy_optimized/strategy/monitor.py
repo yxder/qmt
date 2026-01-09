@@ -180,7 +180,7 @@ class MonitorPanel:
     
     def _calculate_performance_metrics(self):
         """计算绩效指标"""
-        from qmt_strategy.utils.tools import calculate_sharpe_ratio, calculate_max_drawdown
+        from utils.tools import calculate_sharpe_ratio, calculate_max_drawdown
         
         metrics = {
             'total_pnl': 0.0,

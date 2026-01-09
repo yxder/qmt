@@ -6,6 +6,7 @@
 
 import sys
 import os
+import numpy as np
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from strategy.data_fetch import DataFetcher
@@ -38,6 +39,19 @@ class QMTStrategySystem:
         self.backtester = Backtester()
         self.monitor = MonitorPanel()
         
+        # 新增优化模块
+        from strategy.feature_standardization import FeatureStandardizer
+        from strategy.stock_filter import StockFilter
+        from strategy.model_fusion import ModelFusion
+        from strategy.industry_rotation import IndustryRotation
+        from strategy.parameter_tuning import ParameterTuner
+        
+        self.feature_standardizer = FeatureStandardizer()  # 特征标准化器
+        self.stock_filter = StockFilter()  # 股票过滤器
+        self.model_fusion = ModelFusion()  # 模型融合器
+        self.industry_rotation = IndustryRotation()  # 行业轮动策略
+        self.parameter_tuner = ParameterTuner()  # 参数调优器
+        
     def run_backtest(self, start_date, end_date):
         """运行历史回测"""
         logger.info(f"开始运行历史回测，时间范围：{start_date} 至 {end_date}")
@@ -46,19 +60,56 @@ class QMTStrategySystem:
         logger.info("获取历史数据")
         historical_data = self.data_fetcher.get_historical_data(start_date, end_date)
         
-        # 数据预处理
+        # 1. 全量股票预过滤
+        logger.info("股票预过滤")
+        filtered_data = self.stock_filter.filter_stocks(historical_data)
+        
+        # 2. 数据预处理
         logger.info("数据预处理")
-        processed_data = self.data_processor.process(historical_data)
+        processed_data = self.data_processor.process(filtered_data)
         
-        # 特征工程
+        # 3. 特征工程
         logger.info("特征工程")
-        features = self.feature_engineer.extract_features(processed_data)
+        raw_features = self.feature_engineer.extract_features(processed_data)
         
-        # 模型训练
-        logger.info("模型训练")
+        # 4. 特征标准化与归一化
+        logger.info("特征标准化与归一化")
+        if 'label' in raw_features.columns:
+            features = self.feature_standardizer.process_features(
+                raw_features.drop('label', axis=1),
+                raw_features['label']
+            )
+            features['label'] = raw_features['label']
+        else:
+            features = self.feature_standardizer.process_features(raw_features)
+        
+        # 5. 模型训练（支持模型融合）
+        logger.info("模型训练与融合")
+        # 训练基础模型
         self.model_trainer.train(features)
         
-        # 回测
+        # 训练融合模型
+        X = features.drop('label', axis=1) if 'label' in features.columns else features
+        y = features['label'] if 'label' in features.columns else None
+        if y is not None:
+            self.model_fusion.train(X, y)
+            
+            # 6. 参数调优（针对融合模型）
+            logger.info("参数调优")
+            # 调优阈值参数
+            thresholds = np.arange(0.1, 0.9, 0.05)
+            best_threshold = self.parameter_tuner.tune_threshold_params(
+                self.model_fusion.fusion_model, X, y, thresholds
+            )
+            logger.info(f"最佳阈值：{best_threshold}")
+        
+        # 7. 行业轮动策略集成
+        logger.info("行业轮动策略分析")
+        industry_analysis = self.industry_rotation.evaluate_industry_boom(processed_data)
+        if industry_analysis is not None:
+            logger.info(f"行业景气度分析结果：{industry_analysis}")
+        
+        # 8. 回测
         logger.info("开始回测")
         backtest_results = self.backtester.run(features)
         
@@ -86,27 +137,54 @@ class QMTStrategySystem:
         # 主循环
         while True:
             try:
-                # 获取实时数据
+                # 1. 获取实时数据
                 logger.info("获取实时数据")
                 realtime_data = self.data_fetcher.get_realtime_data()
                 
-                # 数据预处理
+                # 2. 全量股票预过滤
+                logger.info("股票预过滤")
+                filtered_data = self.stock_filter.filter_stocks(realtime_data)
+                
+                # 3. 数据预处理
                 logger.info("数据预处理")
-                processed_data = self.data_processor.process(realtime_data)
+                processed_data = self.data_processor.process(filtered_data)
                 
-                # 特征工程
+                # 4. 行业轮动策略分析
+                logger.info("行业轮动策略分析")
+                industry_boom = self.industry_rotation.evaluate_industry_boom(processed_data)
+                capital_flow = self.industry_rotation.monitor_industry_capital_flow(processed_data)
+                industry_weights = self.industry_rotation.adjust_industry_weights(industry_boom, capital_flow)
+                rotation_signals = self.industry_rotation.generate_rotation_signals(industry_weights)
+                
+                # 5. 特征工程
                 logger.info("特征工程")
-                features = self.feature_engineer.extract_features(processed_data)
+                raw_features = self.feature_engineer.extract_features(processed_data)
                 
-                # 策略决策
+                # 6. 特征标准化与归一化
+                logger.info("特征标准化与归一化")
+                standardized_features = self.feature_standardizer.transform_new_features(raw_features)
+                
+                # 7. 模型预测（使用融合模型）
+                logger.info("模型预测")
+                predictions, prediction_probs = self.model_fusion.predict(standardized_features)
+                
+                # 8. 策略决策（结合行业轮动信号）
                 logger.info("策略决策")
-                decisions = self.strategy_decision.make_decisions(features)
+                # 将行业轮动信号整合到决策中
+                decisions = self.strategy_decision.make_decisions(
+                    processed_data, 
+                    {
+                        'predictions': predictions,
+                        'probabilities': prediction_probs,
+                        'industry_signals': rotation_signals
+                    }
+                )
                 
-                # 风险控制
+                # 9. 风险控制
                 logger.info("风险控制检查")
                 approved_decisions = self.risk_controller.check(decisions)
                 
-                # 订单执行
+                # 10. 订单执行
                 logger.info("订单执行")
                 execution_results = self.order_executor.execute(approved_decisions)
                 

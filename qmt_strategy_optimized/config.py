@@ -8,7 +8,7 @@
 RUN_MODE = "backtest"
 
 # 回测配置
-BACKTEST_START_DATE = "20251101"
+BACKTEST_START_DATE = "20250101"
 BACKTEST_END_DATE = "20251231"
 
 # 实盘配置
@@ -25,6 +25,7 @@ FEATURE_DATA_PATH = "data/feature_data/"
 # 模型配置
 MODEL_PATH = "models/trained_models/"
 MODEL_TYPE = "xgboost"  # 模型类型：logistic, random_forest, xgboost
+MODEL_FILE_NAME = "model_xgboost_20260108_164001.joblib"  # 具体模型文件名
 TRAIN_DATA_START_DATE = "20251101"  # 模型训练数据开始日期
 TRAIN_DATA_END_DATE = "20251231"  # 模型训练数据结束日期
 TRAIN_VALID_RATIO = 0.7  # 训练集与验证集比例
@@ -48,6 +49,7 @@ MAX_POSITION_PER_STOCK = 0.2  # 单票最大仓位比例
 MAX_TOTAL_POSITION = 0.8  # 总仓位最大比例
 MAX_DAILY_LOSS = 0.03  # 单日最大亏损比例
 MAX_CONSECUTIVE_LOSSES = 5  # 连续亏损最大次数
+MAX_DRAWDOWN = 0.1  # 最大回撤比例
 
 # 日志配置
 LOG_LEVEL = "DEBUG"  # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL

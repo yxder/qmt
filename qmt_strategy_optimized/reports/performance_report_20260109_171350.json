@@ -1,0 +1,12 @@
+{
+    "performance_metrics": {
+        "total_pnl": 0.0,
+        "annual_return": 0.0,
+        "sharpe_ratio": 0.0,
+        "max_drawdown": 0.0,
+        "win_rate": 0.0
+    },
+    "equity_curve": [],
+    "recent_trades": [],
+    "generated_time": "2026-01-09 17:13:50.139279"
+}

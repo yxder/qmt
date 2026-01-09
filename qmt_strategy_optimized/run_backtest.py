@@ -112,6 +112,12 @@ def prepare_backtest_data(historical_data):
                 features['stock_code'] = stock
                 features['date'] = group['time'].dt.date.values
                 features['label'] = group['label'].values
+                # 添加原始价格相关字段
+                features['open'] = group['open'].values
+                features['close'] = group['close'].values
+                features['high'] = group['high'].values
+                features['low'] = group['low'].values
+                features['prev_close'] = group['prev_close'].values
                 # 处理NaN值
                 features = features.fillna(0)  # 将NaN值填充为0
                 all_features.append(features)

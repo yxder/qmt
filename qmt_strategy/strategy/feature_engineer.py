@@ -285,17 +285,12 @@ class FeatureEngineer:
         sector_features = pd.DataFrame(index=data.index) if isinstance(data, pd.DataFrame) else pd.DataFrame()
         
         if isinstance(data, pd.DataFrame):
+            # 1. 板块基本特征
             # 板块涨幅
             if 'sector_change' in data.columns:
                 sector_features['sector_change'] = data['sector_change']
             else:
                 sector_features['sector_change'] = 0.0
-            
-            # 板块资金流入量
-            if 'sector_money_flow' in data.columns:
-                sector_features['sector_money_flow'] = data['sector_money_flow']
-            else:
-                sector_features['sector_money_flow'] = 0.0
             
             # 板块涨跌幅排名
             if 'sector_rank' in data.columns:
@@ -303,11 +298,114 @@ class FeatureEngineer:
             else:
                 sector_features['sector_rank'] = 50.0  # 默认中间排名
             
+            # 2. 板块资金流动特征
+            # 板块资金流入量
+            if 'sector_money_flow' in data.columns:
+                sector_features['sector_money_flow'] = data['sector_money_flow']
+            else:
+                sector_features['sector_money_flow'] = 0.0
+            
+            # 板块资金流入率（新增）
+            if 'sector_money_flow' in data.columns and 'sector_market_cap' in data.columns:
+                sector_features['sector_money_flow_rate'] = data['sector_money_flow'] / data['sector_market_cap']
+            
+            # 板块主力资金流入（新增）
+            if 'sector_main_capital_flow' in data.columns:
+                sector_features['sector_main_capital_flow'] = data['sector_main_capital_flow']
+            
+            # 板块散户资金流入（新增）
+            if 'sector_retail_capital_flow' in data.columns:
+                sector_features['sector_retail_capital_flow'] = data['sector_retail_capital_flow']
+            
+            # 3. 板块交易活跃度特征
             # 板块内涨停家数
             if 'sector_limit_up_count' in data.columns:
                 sector_features['sector_limit_up_count'] = data['sector_limit_up_count']
             else:
                 sector_features['sector_limit_up_count'] = 0.0
+            
+            # 板块内上涨家数占比（新增）
+            if 'sector_up_stocks' in data.columns and 'sector_total_stocks' in data.columns:
+                sector_features['sector_up_ratio'] = data['sector_up_stocks'] / data['sector_total_stocks']
+            
+            # 板块换手率（新增）
+            if 'sector_turnover_rate' in data.columns:
+                sector_features['sector_turnover_rate'] = data['sector_turnover_rate']
+            
+            # 板块成交量变化率（新增）
+            if 'sector_volume_change_rate' in data.columns:
+                sector_features['sector_volume_change_rate'] = data['sector_volume_change_rate']
+            
+            # 4. 板块景气度特征
+            # 板块景气度评分（新增）
+            if 'sector_boom_score' in data.columns:
+                sector_features['sector_boom_score'] = data['sector_boom_score']
+            
+            # 板块市盈率（新增）
+            if 'sector_pe_ratio' in data.columns:
+                sector_features['sector_pe_ratio'] = data['sector_pe_ratio']
+            
+            # 板块市净率（新增）
+            if 'sector_pb_ratio' in data.columns:
+                sector_features['sector_pb_ratio'] = data['sector_pb_ratio']
+            
+            # 板块营收增长率（新增）
+            if 'sector_revenue_growth' in data.columns:
+                sector_features['sector_revenue_growth'] = data['sector_revenue_growth']
+            
+            # 5. 板块轮动特征
+            # 板块相对大盘涨跌幅（新增）
+            if 'sector_change' in data.columns and 'index_change' in data.columns:
+                sector_features['sector_relative_change'] = data['sector_change'] - data['index_change']
+            
+            # 板块动量（新增）
+            if 'sector_momentum_5d' in data.columns:
+                sector_features['sector_momentum_5d'] = data['sector_momentum_5d']
+            
+            if 'sector_momentum_10d' in data.columns:
+                sector_features['sector_momentum_10d'] = data['sector_momentum_10d']
+            
+            if 'sector_momentum_20d' in data.columns:
+                sector_features['sector_momentum_20d'] = data['sector_momentum_20d']
+            
+            # 板块反转指标（新增）
+            if 'sector_reversal_5d' in data.columns:
+                sector_features['sector_reversal_5d'] = data['sector_reversal_5d']
+            
+            # 6. 板块资金流动特征
+            # 板块资金流入排名（新增）
+            if 'sector_money_flow_rank' in data.columns:
+                sector_features['sector_money_flow_rank'] = data['sector_money_flow_rank']
+            
+            # 板块主力资金流入占比（新增）
+            if 'sector_main_capital_flow' in data.columns and 'sector_money_flow' in data.columns:
+                sector_features['sector_main_capital_ratio'] = data['sector_main_capital_flow'] / (data['sector_money_flow'] + 1e-6)
+            
+            # 板块资金流入变化率（新增）
+            if 'sector_money_flow_change_rate' in data.columns:
+                sector_features['sector_money_flow_change_rate'] = data['sector_money_flow_change_rate']
+            
+            # 7. 板块关联特征
+            # 板块相关性（新增）
+            if 'sector_correlation' in data.columns:
+                sector_features['sector_correlation'] = data['sector_correlation']
+            
+            # 板块协同性（新增）
+            if 'sector_synergy' in data.columns:
+                sector_features['sector_synergy'] = data['sector_synergy']
+            
+            # 8. 板块热点强度
+            # 板块涨停家数占比（新增）
+            if 'sector_limit_up_count' in data.columns and 'sector_total_stocks' in data.columns:
+                sector_features['sector_limit_up_ratio'] = data['sector_limit_up_count'] / data['sector_total_stocks']
+            
+            # 板块热度排名（新增）
+            if 'sector_heat_rank' in data.columns:
+                sector_features['sector_heat_rank'] = data['sector_heat_rank']
+            
+            # 板块关注度指数（新增）
+            if 'sector_attention_index' in data.columns:
+                sector_features['sector_attention_index'] = data['sector_attention_index']
         
         return sector_features
     
@@ -548,13 +646,27 @@ class FeatureEngineer:
             else:
                 fundamental_features['pb_ratio'] = 2.0  # 默认2倍
             
-            # 市销率（如果有）
+            # 市销率
             if 'ps_ratio' in data.columns:
                 fundamental_features['ps_ratio'] = data['ps_ratio']
             
-            # 市盈率相对行业水平（如果有）
+            # 市现率（新增）
+            if 'pcf_ratio' in data.columns:
+                fundamental_features['pcf_ratio'] = data['pcf_ratio']
+            
+            # 股息率（新增）
+            if 'dividend_yield' in data.columns:
+                fundamental_features['dividend_yield'] = data['dividend_yield']
+            
+            # 估值相对行业水平
             if 'pe_ratio' in data.columns and 'industry_pe_ratio' in data.columns:
                 fundamental_features['pe_industry_ratio'] = data['pe_ratio'] / data['industry_pe_ratio']
+            
+            if 'pb_ratio' in data.columns and 'industry_pb_ratio' in data.columns:
+                fundamental_features['pb_industry_ratio'] = data['pb_ratio'] / data['industry_pb_ratio']
+            
+            if 'ps_ratio' in data.columns and 'industry_ps_ratio' in data.columns:
+                fundamental_features['ps_industry_ratio'] = data['ps_ratio'] / data['industry_ps_ratio']
             
             # 4. 股本结构
             # 流通股比例（如果有）
@@ -571,23 +683,84 @@ class FeatureEngineer:
                     fundamental_features['shareholder_count_change'] = (data['shareholder_count'] - data['shareholder_count_prev']) / data['shareholder_count_prev']
             
             # 5. 财务质量
-            # 净利润增长率（如果有）
+            # 盈利能力指标
             if 'net_profit_growth' in data.columns:
                 fundamental_features['net_profit_growth'] = data['net_profit_growth']
             
-            # 营收增长率（如果有）
             if 'revenue_growth' in data.columns:
                 fundamental_features['revenue_growth'] = data['revenue_growth']
             
-            # 净资产收益率（如果有）
             if 'roe' in data.columns:
                 fundamental_features['roe'] = data['roe']
             
-            # 资产负债率（如果有）
+            # 毛利率（新增）
+            if 'gross_margin' in data.columns:
+                fundamental_features['gross_margin'] = data['gross_margin']
+            
+            # 净利率（新增）
+            if 'net_margin' in data.columns:
+                fundamental_features['net_margin'] = data['net_margin']
+            
+            # 运营能力指标（新增）
+            if 'asset_turnover' in data.columns:
+                fundamental_features['asset_turnover'] = data['asset_turnover']
+            
+            if 'inventory_turnover' in data.columns:
+                fundamental_features['inventory_turnover'] = data['inventory_turnover']
+            
+            if 'accounts_receivable_turnover' in data.columns:
+                fundamental_features['accounts_receivable_turnover'] = data['accounts_receivable_turnover']
+            
+            # 偿债能力指标
             if 'debt_ratio' in data.columns:
                 fundamental_features['debt_ratio'] = data['debt_ratio']
             
-            # 6. 其他重要特征
+            # 流动比率（新增）
+            if 'current_ratio' in data.columns:
+                fundamental_features['current_ratio'] = data['current_ratio']
+            
+            # 速动比率（新增）
+            if 'quick_ratio' in data.columns:
+                fundamental_features['quick_ratio'] = data['quick_ratio']
+            
+            # 6. 行业属性特征（新增）
+            # 行业分类
+            if 'industry' in data.columns:
+                # 使用get_dummies进行独热编码
+                industry_dummies = pd.get_dummies(data['industry'], prefix='industry', dummy_na=True)
+                fundamental_features = pd.concat([fundamental_features, industry_dummies], axis=1)
+            
+            # 行业细分类别
+            if 'sub_industry' in data.columns:
+                sub_industry_dummies = pd.get_dummies(data['sub_industry'], prefix='sub_industry', dummy_na=True)
+                fundamental_features = pd.concat([fundamental_features, sub_industry_dummies], axis=1)
+            
+            # 行业景气度（新增）
+            if 'industry_boom' in data.columns:
+                fundamental_features['industry_boom'] = data['industry_boom']
+            
+            # 行业资金流入（新增）
+            if 'industry_capital_flow' in data.columns:
+                fundamental_features['industry_capital_flow'] = data['industry_capital_flow']
+            
+            # 行业市盈率排名（新增）
+            if 'industry_pe_rank' in data.columns:
+                fundamental_features['industry_pe_rank'] = data['industry_pe_rank']
+            
+            # 7. 公司属性特征（新增）
+            # 上市时间（新增）
+            if 'listing_years' in data.columns:
+                fundamental_features['listing_years'] = data['listing_years']
+            
+            # 是否为ST股票（新增）
+            if 'is_st' in data.columns:
+                fundamental_features['is_st'] = data['is_st'].astype(int)
+            
+            # 是否为北交所股票（新增）
+            if 'is_north' in data.columns:
+                fundamental_features['is_north'] = data['is_north'].astype(int)
+            
+            # 8. 其他重要特征
             # 近期业绩公告影响
             if 'earnings_announcement' in data.columns:
                 fundamental_features['earnings_announcement'] = data['earnings_announcement']
@@ -600,13 +773,38 @@ class FeatureEngineer:
             else:
                 fundamental_features['turnover_rate'] = 0.0  # 默认0
             
-            # 北向资金持股比例（如果有）
+            # 北向资金持股比例
             if 'northbound_holding_ratio' in data.columns:
                 fundamental_features['northbound_holding_ratio'] = data['northbound_holding_ratio']
             
-            # 机构持股比例（如果有）
+            # 机构持股比例
             if 'institutional_holding_ratio' in data.columns:
                 fundamental_features['institutional_holding_ratio'] = data['institutional_holding_ratio']
+            
+            # 社保持股比例（新增）
+            if 'social_security_holding_ratio' in data.columns:
+                fundamental_features['social_security_holding_ratio'] = data['social_security_holding_ratio']
+            
+            # 基金持股比例（新增）
+            if 'fund_holding_ratio' in data.columns:
+                fundamental_features['fund_holding_ratio'] = data['fund_holding_ratio']
+            
+            # 高管持股比例（新增）
+            if 'executive_holding_ratio' in data.columns:
+                fundamental_features['executive_holding_ratio'] = data['executive_holding_ratio']
+            
+            # 9. 成长能力特征（新增）
+            # 净利润3年复合增长率
+            if 'net_profit_cagr_3y' in data.columns:
+                fundamental_features['net_profit_cagr_3y'] = data['net_profit_cagr_3y']
+            
+            # 营收3年复合增长率
+            if 'revenue_cagr_3y' in data.columns:
+                fundamental_features['revenue_cagr_3y'] = data['revenue_cagr_3y']
+            
+            # 研发投入占比（新增）
+            if 'r_d_ratio' in data.columns:
+                fundamental_features['r_d_ratio'] = data['r_d_ratio']
         
         return fundamental_features
     

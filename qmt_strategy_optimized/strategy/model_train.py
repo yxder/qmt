@@ -723,20 +723,32 @@ class ModelTrainer:
         logger.info("加载模型")
         
         if model_file_path is None:
-            # 如果没有提供模型文件路径，则加载最新的模型
-            model_files = [f for f in os.listdir(config.MODEL_PATH) if f.endswith('.joblib')]
-            if not model_files:
-                logger.warning("模型目录中没有找到模型文件")
-                return None
-            
-            # 按修改时间排序，获取最新的模型文件
-            model_files.sort(key=lambda x: os.path.getmtime(os.path.join(config.MODEL_PATH, x)), reverse=True)
-            model_file_path = os.path.join(config.MODEL_PATH, model_files[0])
+            # 首先尝试加载配置中指定的模型文件
+            if hasattr(config, 'MODEL_FILE_NAME') and config.MODEL_FILE_NAME:
+                model_file_path = os.path.join(config.MODEL_PATH, config.MODEL_FILE_NAME)
+                logger.info(f"使用配置中指定的模型文件：{model_file_path}")
+            else:
+                # 如果没有配置具体模型文件名，则加载最新的模型
+                model_files = [f for f in os.listdir(config.MODEL_PATH) if f.endswith('.joblib')]
+                if not model_files:
+                    logger.warning("模型目录中没有找到模型文件")
+                    return None
+                
+                # 按修改时间排序，获取最新的模型文件
+                model_files.sort(key=lambda x: os.path.getmtime(os.path.join(config.MODEL_PATH, x)), reverse=True)
+                model_file_path = os.path.join(config.MODEL_PATH, model_files[0])
+                logger.info(f"使用最新模型文件：{model_file_path}")
         
         try:
             # 加载模型
             model = joblib.load(model_file_path)
             logger.info(f"模型加载成功：{model_file_path}")
+            
+            # 检查模型类型
+            if hasattr(model, 'predict_proba'):
+                logger.info("模型支持概率预测")
+            else:
+                logger.warning("模型不支持概率预测，这可能导致预测概率全为0")
             
             # 更新模型
             self.model = model
@@ -764,11 +776,14 @@ class ModelTrainer:
             return None
         
         try:
+            # 转换特征为numpy数组，忽略特征名称
+            features_np = features.values
+            
             # 进行预测
-            predictions = self.model.predict(features)
+            predictions = self.model.predict(features_np)
             
             # 获取预测概率，处理单类别情况
-            prob_array = self.model.predict_proba(features)
+            prob_array = self.model.predict_proba(features_np)
             if prob_array.shape[1] > 1:
                 # 多类别情况，获取正类（1）的概率
                 probabilities = prob_array[:, 1]
@@ -778,6 +793,8 @@ class ModelTrainer:
                 probabilities = np.where(predictions == 1, 1.0, 0.0)
             
             logger.info("模型预测完成")
+            logger.info(f"预测结果统计：正例数={sum(predictions)}, 负例数={len(predictions)-sum(predictions)}")
+            logger.info(f"预测概率统计：平均值={probabilities.mean()}, 最大值={probabilities.max()}, 最小值={probabilities.min()}")
             return {
                 'predictions': predictions,
                 'probabilities': probabilities
