@@ -100,20 +100,20 @@ class ModelTrainer:
                 n_jobs=-1  # 使用所有CPU核心
             )
         elif config.MODEL_TYPE == "xgboost":
-            # XGBoost模型，优化reg_alpha（L1）和reg_lambda（L2）参数
+            # XGBoost模型，优化reg_alpha（L1）和reg_lambda（L2）参数，重点优化涨停预测
             model = XGBClassifier(
-                n_estimators=200,  # 树的数量
-                max_depth=6,  # 树的最大深度
-                learning_rate=0.05,  # 学习率
-                subsample=0.8,  # 训练样本采样比例
-                colsample_bytree=0.8,  # 特征采样比例
-                min_child_weight=3,  # 子节点最小权重
-                gamma=0.1,  # 节点分裂所需的最小损失减少量
-                reg_alpha=1.0,  # L1正则化参数
-                reg_lambda=2.0,  # L2正则化参数
-                scale_pos_weight=10,  # 处理不平衡数据
+                n_estimators=1000,  # 大幅增加树的数量，提高模型复杂度
+                max_depth=12,  # 增加树深度，提高模型拟合能力
+                learning_rate=0.01,  # 降低学习率，配合更多的树
+                subsample=0.85,  # 训练样本采样比例
+                colsample_bytree=0.85,  # 特征采样比例
+                min_child_weight=5,  # 调整子节点最小权重
+                gamma=0.2,  # 节点分裂所需的最小损失减少量
+                reg_alpha=2.0,  # 增加L1正则化参数，减少过拟合
+                reg_lambda=8.0,  # 增加L2正则化参数，减少过拟合
+                scale_pos_weight=30,  # 调整处理不平衡数据的参数，涨停样本较少，增加权重
                 objective='binary:logistic',  # 二分类目标函数
-                eval_metric='auc',  # 评估指标
+                eval_metric='aucpr',  # 改为使用AUC-PR评估指标，更适合不平衡数据
                 random_state=42,  # 随机种子
                 n_jobs=-1  # 使用所有CPU核心
             )
@@ -121,13 +121,18 @@ class ModelTrainer:
             # 默认使用XGBoost模型
             logger.warning(f"未知的模型类型：{config.MODEL_TYPE}，使用默认模型XGBoost")
             model = XGBClassifier(
-                n_estimators=200,
-                max_depth=6,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=1.0,
-                reg_lambda=2.0,
+                n_estimators=1000,
+                max_depth=12,
+                learning_rate=0.01,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                min_child_weight=5,
+                gamma=0.2,
+                reg_alpha=2.0,
+                reg_lambda=8.0,
+                scale_pos_weight=30,
+                objective='binary:logistic',
+                eval_metric='aucpr',
                 random_state=42,
                 n_jobs=-1
             )
@@ -341,17 +346,63 @@ class ModelTrainer:
         logger.info("处理不平衡数据")
         
         try:
-            # 使用SMOTE过采样处理不平衡数据
-            from imblearn.over_sampling import SMOTE
+            # 尝试导入imblearn库
+            from imblearn.over_sampling import SMOTE, ADASYN, SMOTEENN
+            from imblearn.combine import SMOTEENN
             
-            smote = SMOTE(random_state=42)
-            X_resampled, y_resampled = smote.fit_resample(X, y)
+            # 计算原始数据的类别分布
+            if isinstance(y, pd.Series):
+                y = y.values
             
-            # 记录采样前后的标签分布
-            before_counts = np.bincount(y)
-            after_counts = np.bincount(y_resampled)
-            logger.info(f"过采样前标签分布：{dict(zip(np.unique(y), before_counts))}")
-            logger.info(f"过采样后标签分布：{dict(zip(np.unique(y_resampled), after_counts))}")
+            unique_classes, class_counts = np.unique(y, return_counts=True)
+            class_distribution = dict(zip(unique_classes, class_counts))
+            logger.info(f"原始数据类别分布：{class_distribution}")
+            
+            # 检查是否是严重不平衡数据
+            if len(class_counts) == 2:
+                minority_class = unique_classes[np.argmin(class_counts)]
+                majority_class = unique_classes[np.argmax(class_counts)]
+                imbalance_ratio = class_counts.max() / class_counts.min()
+                logger.info(f"数据不平衡比例：{imbalance_ratio:.2f} (少数类: {minority_class}, 多数类: {majority_class})")
+            else:
+                imbalance_ratio = 1.0
+                logger.info(f"数据有{len(unique_classes)}个类别，无法计算二分类不平衡比例")
+            
+            # 根据不平衡比例选择合适的过采样方法
+            if imbalance_ratio > 10:
+                # 严重不平衡数据，使用SMOTE+ADASYN组合
+                logger.info("使用SMOTE+ADASYN组合方法处理严重不平衡数据")
+                
+                # 先使用SMOTE进行过采样
+                smote = SMOTE(random_state=42, sampling_strategy=0.5)
+                X_smote, y_smote = smote.fit_resample(X, y)
+                
+                # 再使用ADASYN进一步平衡
+                adasyn = ADASYN(random_state=42, sampling_strategy='auto')
+                X_resampled, y_resampled = adasyn.fit_resample(X_smote, y_smote)
+            elif imbalance_ratio > 5:
+                # 中度不平衡数据，使用SMOTEEN（SMOTE+ENN组合）
+                logger.info("使用SMOTEEN（SMOTE+ENN组合）处理中度不平衡数据")
+                smoteen = SMOTEENN(random_state=42, sampling_strategy='auto')
+                X_resampled, y_resampled = smoteen.fit_resample(X, y)
+            elif imbalance_ratio > 2:
+                # 轻度不平衡数据，使用SMOTE
+                logger.info("使用SMOTE处理轻度不平衡数据")
+                smote = SMOTE(random_state=42, sampling_strategy='auto')
+                X_resampled, y_resampled = smote.fit_resample(X, y)
+            else:
+                # 平衡数据，不需要过采样
+                logger.info("数据基本平衡，不需要过采样")
+                return X, y
+            
+            # 记录采样后的标签分布
+            after_unique, after_counts = np.unique(y_resampled, return_counts=True)
+            after_distribution = dict(zip(after_unique, after_counts))
+            logger.info(f"过采样后标签分布：{after_distribution}")
+            
+            # 计算采样效果
+            new_imbalance_ratio = after_counts.max() / after_counts.min()
+            logger.info(f"过采样后不平衡比例：{new_imbalance_ratio:.2f}")
             
             return X_resampled, y_resampled
         except ImportError:
@@ -359,23 +410,65 @@ class ModelTrainer:
             return X, y
         except Exception as e:
             logger.error(f"过采样处理失败：{e}")
+            # 尝试使用简单的类别权重调整
+            logger.info("尝试使用类别权重调整替代过采样")
             return X, y
     
     def _calculate_class_weight(self, y):
         """计算类别权重"""
         logger.info("计算类别权重")
         
+        # 确保y是numpy数组
+        if isinstance(y, pd.Series):
+            y = y.values
+        
         # 计算每个类别的样本数量
-        label_counts = np.bincount(y)
+        unique_classes, class_counts = np.unique(y, return_counts=True)
         total_samples = len(y)
         
-        # 计算类别权重（反比于样本数量）
+        # 计算类别频率
+        class_freq = class_counts / total_samples
+        
+        # 计算类别权重
         class_weight = {}
-        for i, count in enumerate(label_counts):
+        
+        # 方法1：经典的反比频率方法
+        # for cls, count in zip(unique_classes, class_counts):
+        #     if count > 0:
+        #         class_weight[cls] = total_samples / (len(unique_classes) * count)
+        #     else:
+        #         class_weight[cls] = 1.0
+        
+        # 方法2：使用对数反比频率，更适合极端不平衡数据
+        # for cls, count in zip(unique_classes, class_counts):
+        #     if count > 0:
+        #         class_weight[cls] = np.log(total_samples / (count + 1))
+        #     else:
+        #         class_weight[cls] = 1.0
+        
+        # 方法3：动态调整的权重，结合类别频率和极端值处理
+        for cls, count, freq in zip(unique_classes, class_counts, class_freq):
             if count > 0:
-                class_weight[i] = total_samples / (len(label_counts) * count)
+                # 基础权重：反比于频率
+                base_weight = 1.0 / freq
+                
+                # 极端值处理：对过高的权重进行平滑
+                if base_weight > 50:  # 设置最大权重阈值
+                    base_weight = 50 + np.log(base_weight - 50 + 1)
+                elif base_weight < 0.1:  # 设置最小权重阈值
+                    base_weight = 0.1
+                
+                class_weight[cls] = base_weight
             else:
-                class_weight[i] = 1.0
+                class_weight[cls] = 1.0
+        
+        # 归一化权重，确保权重和为类别数量
+        weight_sum = sum(class_weight.values())
+        num_classes = len(class_weight)
+        for cls in class_weight:
+            class_weight[cls] = (class_weight[cls] / weight_sum) * num_classes
+        
+        logger.info(f"计算的类别权重：{class_weight}")
         
         return class_weight
     
@@ -607,6 +700,66 @@ class ModelTrainer:
         metrics['auc_pr'] = average_precision_score(y_valid, y_pred_proba)
         logger.info(f"AUC-PR: {metrics['auc_pr']:.4f}")
         
+        # 使用SHAP进行特征重要性评估
+        logger.info("使用SHAP进行特征重要性评估")
+        try:
+            import shap
+            # 生成SHAP解释器
+            if config.MODEL_TYPE == "xgboost":
+                # 使用TreeExplainer对XGBoost模型进行解释
+                explainer = shap.TreeExplainer(model)
+            else:
+                # 对于其他模型，使用KernelExplainer（计算成本较高）
+                # 采样数据以提高计算效率
+                sample_size = min(1000, len(X_valid))
+                sample_indices = np.random.choice(len(X_valid), sample_size, replace=False)
+                X_sample = X_valid.iloc[sample_indices] if isinstance(X_valid, pd.DataFrame) else X_valid[sample_indices]
+                explainer = shap.KernelExplainer(model.predict_proba, X_sample)
+            
+            # 计算SHAP值
+            # 同样采样以提高效率
+            sample_size = min(2000, len(X_valid))
+            sample_indices = np.random.choice(len(X_valid), sample_size, replace=False)
+            X_shap = X_valid.iloc[sample_indices] if isinstance(X_valid, pd.DataFrame) else X_valid[sample_indices]
+            shap_values = explainer.shap_values(X_shap)
+            
+            # 处理不同模型的输出格式
+            if isinstance(shap_values, list):
+                # 对于分类模型，shap_values返回多个数组，我们只需要正类的SHAP值
+                shap_values = shap_values[1]
+            
+            # 计算特征重要性
+            if isinstance(X_valid, pd.DataFrame):
+                feature_names = X_valid.columns.tolist()
+            else:
+                feature_names = [f"feature_{i}" for i in range(X_valid.shape[1])]
+            
+            # 计算每个特征的平均SHAP值绝对值作为重要性
+            shap_importance = np.abs(shap_values).mean(axis=0)
+            feature_importance = dict(zip(feature_names, shap_importance))
+            
+            # 排序特征重要性
+            sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+            logger.info("特征重要性排序：")
+            for i, (feature, importance) in enumerate(sorted_features[:20]):
+                logger.info(f"  {i+1}. {feature}: {importance:.4f}")
+            
+            # 保存top 30个最重要特征
+            top_features = [feature for feature, _ in sorted_features[:30]]
+            logger.info(f"Top 30重要特征：{top_features}")
+            
+            # 将top特征保存到模型属性中，供后续使用
+            model.top_features = top_features
+            
+            # 保存SHAP特征重要性到metrics中
+            metrics['shap_feature_importance'] = feature_importance
+            metrics['top_30_features'] = top_features
+            
+        except ImportError:
+            logger.warning("SHAP库未安装，跳过特征重要性评估")
+        except Exception as e:
+            logger.error(f"SHAP特征重要性评估失败：{e}")
+        
         logger.info(f"模型性能指标：{metrics}")
         
         # 检查模型准确率是否低于阈值
@@ -657,45 +810,97 @@ class ModelTrainer:
         """创建集成模型，提高预测准确性"""
         logger.info("创建集成模型")
         
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-        from sklearn.ensemble import StackingClassifier
+        from sklearn.linear_model import LogisticRegression, RidgeClassifier
+        from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, VotingClassifier
+        from sklearn.ensemble import StackingClassifier, BaggingClassifier
+        from sklearn.svm import SVC
         from xgboost import XGBClassifier
-        
+        from lightgbm import LGBMClassifier
         try:
-            # 定义基础模型，使用已优化的参数
+            # 定义多样化的基础模型，增加随机性和泛化能力
             base_models = [
                 ('lr', LogisticRegression(
                     penalty='elasticnet', solver='saga', l1_ratio=0.5, 
-                    C=1.0, max_iter=1500, random_state=42
+                    C=1.0, max_iter=2000, random_state=42, 
+                    class_weight='balanced'
+                )),
+                ('ridge', RidgeClassifier(
+                    alpha=1.0, solver='auto', random_state=42, 
+                    class_weight='balanced'
                 )),
                 ('rf', RandomForestClassifier(
-                    n_estimators=300, max_depth=15, min_samples_split=10,
-                    min_samples_leaf=5, max_features='sqrt', bootstrap=True,
+                    n_estimators=500, max_depth=20, min_samples_split=8,
+                    min_samples_leaf=4, max_features='sqrt', bootstrap=True,
                     oob_score=True, class_weight='balanced', 
-                    random_state=42, n_jobs=-1
+                    random_state=42, n_jobs=-1,
+                    # 增加随机性
+                    max_samples=0.9,  # 使用90%的样本训练每棵树
+                    warm_start=True  # 允许增量训练
+                )),
+                ('et', ExtraTreesClassifier(
+                    n_estimators=500, max_depth=20, min_samples_split=8,
+                    min_samples_leaf=4, max_features='sqrt', bootstrap=True,
+                    oob_score=True, class_weight='balanced', 
+                    random_state=42, n_jobs=-1,
+                    # 增加随机性
+                    max_samples=0.9
                 )),
                 ('xgb', XGBClassifier(
-                    n_estimators=300, max_depth=8, learning_rate=0.05,
-                    subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
-                    gamma=0.1, reg_alpha=1.0, reg_lambda=2.0,
-                    scale_pos_weight=10, objective='binary:logistic',
-                    eval_metric='auc', random_state=42, n_jobs=-1
+                    n_estimators=1000, max_depth=12, learning_rate=0.01,
+                    subsample=0.75, colsample_bytree=0.75, min_child_weight=5,
+                    gamma=0.2, reg_alpha=2.0, reg_lambda=8.0,
+                    scale_pos_weight=30, objective='binary:logistic',
+                    eval_metric='aucpr', random_state=42, n_jobs=-1,
+                    # 增加随机性
+                    colsample_bylevel=0.8,  # 每级树的特征采样
+                    colsample_bynode=0.8,  # 每个节点的特征采样
+                    subsample_for_bin=200000  # 构建直方图的样本数
+                )),
+                ('lgbm', LGBMClassifier(
+                    n_estimators=1000, max_depth=12, learning_rate=0.01,
+                    subsample=0.75, colsample_bytree=0.75, min_child_weight=5,
+                    reg_alpha=2.0, reg_lambda=8.0,
+                    scale_pos_weight=30, objective='binary',
+                    metric='aucpr', random_state=42, n_jobs=-1,
+                    # 增加随机性
+                    feature_fraction=0.8,  # 特征采样比例
+                    bagging_fraction=0.8,  # 样本采样比例
+                    bagging_freq=5,  # 每5轮迭代进行一次bagging
+                    min_data_in_leaf=10  # 叶子节点最小数据量
                 ))
             ]
             
-            # 尝试使用Stacking集成方法
+            # 进一步增强基础模型的随机性：添加Bagging包装器
+            bagged_models = []
+            for name, model in base_models:
+                # 为每个基础模型添加Bagging包装，增加随机性
+                bagged_model = BaggingClassifier(
+                    estimator=model,
+                    n_estimators=5,  # 每个基础模型使用5个bagging副本
+                    max_samples=0.9,  # 每个bagging副本使用90%的样本
+                    max_features=0.9,  # 每个bagging副本使用90%的特征
+                    bootstrap=True,  # 样本抽样
+                    bootstrap_features=True,  # 特征抽样
+                    random_state=42,
+                    n_jobs=-1
+                )
+                bagged_models.append((f'bagged_{name}', bagged_model))
+            
+            # 尝试使用Stacking集成方法，结合bagged模型
             logger.info("创建Stacking集成模型")
             stacking_model = StackingClassifier(
-                estimators=base_models,
-                final_estimator=LogisticRegression(
-                    penalty='elasticnet', solver='saga', l1_ratio=0.5,
-                    C=1.0, max_iter=1500, random_state=42
+                estimators=bagged_models,
+                final_estimator=XGBClassifier(
+                    n_estimators=500, max_depth=8, learning_rate=0.05,
+                    subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+                    gamma=0.1, reg_alpha=1.0, reg_lambda=5.0,
+                    scale_pos_weight=15, objective='binary:logistic',
+                    eval_metric='aucpr', random_state=42, n_jobs=-1
                 ),
                 cv=5,  # 5折交叉验证
                 stack_method='predict_proba',  # 使用概率作为元特征
                 n_jobs=-1,
-                passthrough=False  # 不将原始特征传递给最终估计器
+                passthrough=True  # 将原始特征传递给最终估计器，增加信息量
             )
             
             # 训练Stacking模型
@@ -705,11 +910,12 @@ class ModelTrainer:
         except Exception as e:
             logger.warning(f"Stacking集成模型创建失败：{e}，将使用投票法集成模型")
             
-            # 投票法集成作为备选
+            # 投票法集成作为备选，使用多样化的模型
             logger.info("创建投票法集成模型")
             voting_model = VotingClassifier(
                 estimators=base_models,
                 voting='soft',  # 软投票，使用概率
+                weights=[1, 1, 1.5, 1.5, 2, 2],  # 给树模型更高的权重
                 n_jobs=-1
             )
             

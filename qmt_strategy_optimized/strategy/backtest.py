@@ -8,7 +8,12 @@ import pandas as pd
 import numpy as np
 from utils.logger import setup_logger
 import config
-from utils.tools import calculate_sharpe_ratio, calculate_max_drawdown
+from utils.tools import (
+    calculate_sharpe_ratio, calculate_max_drawdown, calculate_sortino_ratio,
+    calculate_calmar_ratio, calculate_information_ratio, calculate_beta, calculate_alpha,
+    calculate_win_rate, calculate_profit_loss_ratio, calculate_max_consecutive_wins,
+    calculate_max_consecutive_losses, calculate_avg_holding_days
+)
 
 logger = setup_logger()
 
@@ -271,6 +276,143 @@ class Backtester:
             # 更新每日资金曲线
             self._update_equity_curve(date, daily_features)
     
+    def _simulate_order_execution(self, date, stock, action, order_type, order_time, price, quantity, daily_features):
+        """模拟真实订单执行情况
+        
+        Args:
+            date: 交易日期
+            stock: 股票代码
+            action: 交易方向，'buy'或'sell'
+            order_type: 订单类型，'limit'或'market'
+            order_time: 下单时间，如'09:25'、'10:30'等
+            price: 委托价格
+            quantity: 委托数量
+            daily_features: 当日股票数据
+            
+        Returns:
+            tuple: (实际成交数量, 实际成交价格, 成交率)
+        """
+        # 获取股票当日数据
+        stock_data = daily_features[daily_features['stock_code'] == stock]
+        if stock_data.empty:
+            return quantity, price, 1.0  # 默认全部成交
+        
+        row = stock_data.iloc[0]
+        
+        # 获取当日真实行情数据
+        open_price = row.get('open', price)
+        high_price = row.get('high', price)
+        low_price = row.get('low', price)
+        close_price = row.get('close', price)
+        volume = row.get('volume', 1000000)  # 当日总成交量
+        
+        # 1. 计算流动性因子（基于当日成交量和股票市值）
+        liquidity = volume / 1000000  # 成交量（百万股）
+        
+        # 2. 计算订单大小因子（订单数量占当日成交量的比例）
+        order_size_ratio = quantity / volume if volume > 0 else 0.1
+        
+        # 3. 根据订单类型和时间计算成交率
+        execution_rate = 1.0
+        actual_price = price
+        
+        if order_type == 'limit':
+            # 限价委托
+            if action == 'buy':
+                # 买单：如果委托价格大于等于最低价，则成交
+                if price >= low_price:
+                    # 部分成交，成交率取决于订单大小和流动性
+                    if order_size_ratio <= 0.001:  # 订单小于成交量的0.1%
+                        execution_rate = 1.0  # 全部成交
+                    elif order_size_ratio <= 0.01:  # 订单小于成交量的1%
+                        execution_rate = 0.9  # 90%成交
+                    elif order_size_ratio <= 0.05:  # 订单小于成交量的5%
+                        execution_rate = 0.8  # 80%成交，提高成交率
+                    else:  # 大订单
+                        execution_rate = max(0.6, 1.0 - order_size_ratio * 4)  # 最大60%成交率，提高成交率
+                    
+                    # 买单实际成交价格 = 委托价格 * (1 + 滑点率 * (1 - execution_rate))
+                    actual_price = price * (1 + self.slippage_rate * (2 - execution_rate))
+                    actual_price = min(actual_price, high_price)  # 不超过最高价
+                else:
+                    # 委托价格低于最低价，尝试调整价格重新匹配
+                    # 对于集合竞价委托，使用开盘价作为成交价格
+                    if order_time == '09:25':
+                        actual_price = open_price
+                        execution_rate = 0.8  # 集合竞价成交率调整为80%
+                    else:
+                        # 其他时间，无法成交
+                        execution_rate = 0.0
+            else:  # sell
+                # 卖单：如果委托价格小于等于最高价，则成交
+                if price <= high_price:
+                    # 部分成交，成交率取决于订单大小和流动性
+                    if order_size_ratio <= 0.001:  # 订单小于成交量的0.1%
+                        execution_rate = 1.0  # 全部成交
+                    elif order_size_ratio <= 0.01:  # 订单小于成交量的1%
+                        execution_rate = 0.9  # 90%成交
+                    elif order_size_ratio <= 0.05:  # 订单小于成交量的5%
+                        execution_rate = 0.8  # 80%成交，提高成交率
+                    else:  # 大订单
+                        execution_rate = max(0.6, 1.0 - order_size_ratio * 4)  # 最大60%成交率，提高成交率
+                    
+                    # 卖单实际成交价格 = 委托价格 * (1 - 滑点率 * (1 - execution_rate))
+                    actual_price = price * (1 - self.slippage_rate * (2 - execution_rate))
+                    actual_price = max(actual_price, low_price)  # 不低于最低价
+                else:
+                    # 委托价格高于最高价，无法成交
+                    execution_rate = 0.0
+        elif order_type == 'market':
+            # 市价委托，确保成交，但价格可能有滑点
+            execution_rate = 1.0
+            if action == 'buy':
+                # 市价买单，实际成交价格 = 最高价 * (1 + 滑点率)
+                actual_price = high_price * (1 + self.slippage_rate * 2)
+            else:  # sell
+                # 市价卖单，实际成交价格 = 最低价 * (1 - 滑点率)
+                actual_price = low_price * (1 - self.slippage_rate * 2)
+        
+        # 4. 根据下单时间调整成交率
+        hour = int(order_time.split(':')[0])
+        minute = int(order_time.split(':')[1])
+        total_minutes = hour * 60 + minute
+        
+        if order_time == '09:25':  # 集合竞价
+            # 集合竞价成交率调整为更高
+            execution_rate *= 0.9  # 降低10%的成交率，之前是20%
+        elif total_minutes < 10 * 60 + 30:  # 开盘后1.5小时内
+            # 开盘初期流动性较高，成交率较高
+            execution_rate *= 1.1  # 提高10%的成交率
+        elif total_minutes > 14 * 60 + 30:  # 收盘前30分钟
+            # 收盘前流动性降低，成交率较低
+            execution_rate *= 0.9  # 降低10%的成交率
+        
+        # 5. 根据流动性调整成交率
+        if liquidity < 1:  # 低流动性股票（日成交量<100万股）
+            execution_rate *= 0.8  # 降低20%的成交率，之前是30%
+        elif liquidity < 5:  # 中等流动性股票（日成交量100-500万股）
+            execution_rate *= 0.95  # 降低5%的成交率，之前是10%
+        # 高流动性股票不调整
+        
+        # 6. 确保成交率在合理范围内
+        execution_rate = max(0.0, min(1.0, execution_rate))
+        
+        # 7. 计算实际成交数量
+        actual_quantity = int(quantity * execution_rate / 100) * 100  # 按100股为单位
+        actual_quantity = max(actual_quantity, 0)
+        
+        # 8. 特殊情况处理：如果实际成交数量为0，但订单类型为限价委托且是集合竞价，确保至少成交1手
+        if actual_quantity == 0 and order_time == '09:25' and quantity >= 100:
+            actual_quantity = 100
+            execution_rate = actual_quantity / quantity
+        
+        # 9. 特殊情况处理：如果实际成交数量为0，但订单类型为市价委托，确保至少成交1手
+        if actual_quantity == 0 and order_type == 'market' and quantity >= 100:
+            actual_quantity = 100
+            execution_rate = actual_quantity / quantity
+        
+        return actual_quantity, actual_price, execution_rate
+    
     def _simulate_daily_trading(self, date, daily_features):
         """模拟每日交易，使用真实策略决策过程"""
         logger.info(f"模拟{date}的交易")
@@ -297,34 +439,40 @@ class Backtester:
                         'price': current_price,
                         'probability': 0.7,  # 较高的卖出概率
                         'total_score': 70,    # 较高的卖出分数
-                        'time': pd.Timestamp(date)
+                        'time': pd.Timestamp(date),
+                        'order_type': 'limit',  # 限价委托
+                        'order_time': '14:55',  # 尾盘卖出
+                        'sell_ratio': 1.0  # 全部卖出
                     }
                     sell_decisions.append(sell_decision)
         
         # 生成买入决策
         buy_decisions = []
         # 遍历每日数据中的股票，生成买入决策
+        # 简化策略：每天买入前3只股票，不管其他条件
         for idx, row in daily_features.iterrows():
             # 获取股票代码
             stock = row['stock_code'] if 'stock_code' in row else f'stock_{idx % 6 + 1}'
             
-            # 基于策略逻辑决定是否买入
-            # 示例：只买入评分较高的股票，且不重复买入已持有的股票
-            if stock not in self.holdings:
+            # 不重复买入已持有的股票，且每天只买3只
+            if stock not in self.holdings and len(buy_decisions) < 3:
                 # 获取开盘价
                 open_price = row.get('open', 50) if row.get('open', 0) > 0 else 50
                 
-                # 简单的买入策略：只买入开盘价大于0的股票
+                # 确保价格有效
                 if open_price > 0:
-                    buy_decision = {
+                    buy_decisions.append({
                         'stock': stock,
                         'action': 'buy',
                         'price': open_price,
-                        'probability': 0.6,  # 中等的买入概率
-                        'total_score': 60,    # 中等的买入分数
-                        'time': pd.Timestamp(date)
-                    }
-                    buy_decisions.append(buy_decision)
+                        'probability': 0.8,  # 较高的买入概率
+                        'total_score': 80,    # 较高的买入分数
+                        'time': pd.Timestamp(date),
+                        'order_type': 'limit',  # 限价委托
+                        'order_time': '09:25',  # 集合竞价下单
+                        'position_ratio': 0.15  # 15%仓位
+                    })
+                    logger.info(f"生成买入决策：{stock}，价格：{open_price}")
         
         # 合并决策，先卖后买
         decisions = sell_decisions + buy_decisions
@@ -436,29 +584,28 @@ class Backtester:
         return trade_results
     
     def _simulate_buy(self, date, stock, decision, daily_features):
-        """模拟买入股票"""
+        """模拟买入股票，加入真实委托执行逻辑"""
         try:
-            # 获取买入价格（优先使用决策中的价格，否则使用随机价格）
+            # 获取买入价格（优先使用决策中的价格，否则从数据中获取）
             price = decision.get('price', 0)
+            order_type = decision.get('order_type', 'limit')  # 默认限价委托
+            order_time = decision.get('order_time', '09:25')  # 默认集合竞价下单
             
-            # 如果价格无效，尝试从数据中获取或生成随机价格
+            # 如果价格无效，尝试从数据中获取
             if price <= 0:
                 stock_data = daily_features[daily_features['stock_code'] == stock]
                 if not stock_data.empty:
                     row = stock_data.iloc[0]
                     price = row.get('bid_price_925', row.get('open', row.get('close', 0)))
                 
-            # 如果还是没有有效价格，生成随机价格
-            if price <= 0:
-                logger.warning(f"{date} {stock} 价格无效，生成随机价格")
-                price = np.random.rand() * 100 + 10  # 10-110之间的随机价格
-            
+            # 如果还是没有有效价格，跳过该交易
             if price <= 0:
                 logger.warning(f"{date} {stock} 买入价格无效：{price}")
                 return None
             
-            # 计算买入数量（根据总资金和仓位限制）
-            buy_amount = self.current_capital * 0.01  # 每次买入总资金的1%
+            # 计算买入数量（使用动态仓位）
+            position_ratio = decision.get('position_ratio', 0.1)  # 默认为10%
+            buy_amount = self.current_capital * position_ratio
             quantity = int(buy_amount / price / 100) * 100  # 按100股整数倍
             quantity = max(quantity, 100)  # 至少买入100股
             
@@ -466,20 +613,40 @@ class Backtester:
                 logger.warning(f"{date} {stock} 买入数量无效：{quantity}")
                 return None
             
-            # 计算买入成本（考虑滑点、佣金和市场冲击成本）
-            actual_price = price * (1 + self.slippage_rate)
-            buy_value = actual_price * quantity
-            commission = buy_value * self.commission_rate
+            # 模拟真实委托执行
+            # 1. 根据订单类型和下单时间，模拟成交情况
+            actual_quantity, actual_price, execution_rate = self._simulate_order_execution(
+                date, stock, 'buy', order_type, order_time, price, quantity, daily_features
+            )
+            
+            # 2. 计算真实交易成本
+            buy_value = actual_price * actual_quantity
+            
+            # 佣金计算：双向收费，最低5元
+            commission = max(buy_value * self.commission_rate, 5.0)
+            
+            # 印花税：买入时不收取，卖出时收取
+            stamp_duty = 0.0
+            
+            # 过户费：上海股票收取，按成交金额的0.002%收取，最低1元
+            transfer_fee = 0.0
+            if stock.endswith('.SH'):  # 上海股票
+                transfer_fee = max(buy_value * 0.00002, 1.0)
             
             # 计算市场冲击成本：基于订单大小的非线性成本
-            # 市场冲击成本公式：冲击成本率 = 0.1% * sqrt(订单金额/100万)
-            market_impact_rate = 0.001 * np.sqrt(buy_value / 1000000)
+            # 市场冲击成本公式：冲击成本率 = 0.1% * sqrt(订单金额/100万) * (1 - execution_rate)
+            market_impact_rate = 0.001 * np.sqrt(buy_value / 1000000) * (2 - execution_rate)
             market_impact_cost = buy_value * market_impact_rate
             
-            total_cost = buy_value + commission + market_impact_cost
+            total_cost = buy_value + commission + stamp_duty + transfer_fee + market_impact_cost
             
             if total_cost > self.current_capital:
                 logger.warning(f"{date} {stock} 可用资金不足，需要{total_cost:.2f}，但只有{self.current_capital:.2f}")
+                return None
+            
+            # 如果实际成交数量为0，返回None（委托未成交）
+            if actual_quantity <= 0:
+                logger.warning(f"{date} {stock} 买入委托未成交：下单{quantity}股，实际成交{actual_quantity}股")
                 return None
             
             # 更新持仓
@@ -488,21 +655,23 @@ class Backtester:
                 current_quantity = self.holdings[stock]['quantity']
                 current_avg_price = self.holdings[stock]['buy_price']
                 total_buy_value = current_quantity * current_avg_price + buy_value
-                new_quantity = current_quantity + quantity
+                new_quantity = current_quantity + actual_quantity
                 new_avg_price = total_buy_value / new_quantity
                 
                 self.holdings[stock].update({
                     'quantity': new_quantity,
                     'buy_price': new_avg_price,
-                    'highest_price': max(self.holdings[stock]['highest_price'], actual_price)
+                    'highest_price': max(self.holdings[stock]['highest_price'], actual_price),
+                    'update_time': date
                 })
             else:
                 # 新建持仓
                 self.holdings[stock] = {
-                    'quantity': quantity,
+                    'quantity': actual_quantity,
                     'buy_price': actual_price,
                     'buy_date': date,
-                    'highest_price': actual_price
+                    'highest_price': actual_price,
+                    'update_time': date
                 }
             
             # 扣除资金
@@ -513,13 +682,21 @@ class Backtester:
                 'stock': stock,
                 'action': 'buy',
                 'price': actual_price,
-                'quantity': quantity,
+                'quantity': actual_quantity,
+                'order_quantity': quantity,  # 原始下单数量
+                'execution_rate': execution_rate,  # 成交率
+                'order_type': order_type,  # 订单类型
+                'order_time': order_time,  # 下单时间
                 'total_cost': total_cost,
+                'commission': commission,
+                'stamp_duty': stamp_duty,
+                'transfer_fee': transfer_fee,
+                'market_impact_cost': market_impact_cost,
                 'pnl': 0.0,
                 'time': pd.Timestamp(date)
             }
             
-            logger.info(f"{date} 买入 {stock}，价格：{actual_price:.2f}，数量：{quantity}，成本：{total_cost:.2f}")
+            logger.info(f"{date} 买入 {stock}，价格：{actual_price:.2f}，数量：{actual_quantity}/{quantity}，成交率：{execution_rate:.1%}，成本：{total_cost:.2f}")
             return trade_result
             
         except Exception as e:
@@ -527,42 +704,74 @@ class Backtester:
             return None
     
     def _simulate_sell(self, date, stock, decision, daily_features):
-        """模拟卖出股票"""
+        """模拟卖出股票，加入真实委托执行逻辑"""
         try:
             if stock not in self.holdings:
                 logger.warning(f"{date} {stock} 不在持仓中，无法卖出")
                 return None
             
-            # 获取卖出价格（使用收盘价）
+            # 获取卖出价格（使用决策中的价格或从数据中获取）
             holding = self.holdings[stock]
-            stock_data = daily_features[daily_features['stock_code'] == stock]
-            if stock_data.empty:
-                logger.warning(f"{date} {stock} 没有找到对应的数据，跳过交易")
-                return None
-            row = stock_data.iloc[0]
-            price = row.get('close', 0)
+            price = decision.get('price', 0)
+            order_type = decision.get('order_type', 'limit')  # 默认限价委托
+            order_time = decision.get('order_time', '14:55')  # 默认尾盘卖出
+            
+            # 如果价格无效，尝试从数据中获取
+            if price <= 0:
+                stock_data = daily_features[daily_features['stock_code'] == stock]
+                if stock_data.empty:
+                    logger.warning(f"{date} {stock} 没有找到对应的数据，跳过交易")
+                    return None
+                row = stock_data.iloc[0]
+                price = row.get('close', row.get('open', 0))
             
             if price <= 0:
                 logger.warning(f"{date} {stock} 卖出价格无效：{price}")
                 return None
             
-            # 计算卖出数量（全部卖出）
-            quantity = holding['quantity']
+            # 计算卖出数量（全部或部分）
+            sell_ratio = decision.get('sell_ratio', 1.0)  # 默认全部卖出
+            quantity = int(holding['quantity'] * sell_ratio / 100) * 100  # 按100股整数倍
+            quantity = max(quantity, 100)  # 至少卖出100股
             
-            # 计算卖出收入（考虑滑点、佣金和市场冲击成本）
-            actual_price = price * (1 - self.slippage_rate)
-            sell_value = actual_price * quantity
-            commission = sell_value * self.commission_rate
+            if quantity <= 0:
+                logger.warning(f"{date} {stock} 卖出数量无效：{quantity}")
+                return None
+            
+            # 模拟真实委托执行
+            # 1. 根据订单类型和下单时间，模拟成交情况
+            actual_quantity, actual_price, execution_rate = self._simulate_order_execution(
+                date, stock, 'sell', order_type, order_time, price, quantity, daily_features
+            )
+            
+            # 2. 计算真实交易成本
+            sell_value = actual_price * actual_quantity
+            
+            # 佣金计算：双向收费，最低5元
+            commission = max(sell_value * self.commission_rate, 5.0)
+            
+            # 印花税：卖出时收取，按成交金额的0.1%收取
+            stamp_duty = sell_value * 0.001
+            
+            # 过户费：上海股票收取，按成交金额的0.002%收取，最低1元
+            transfer_fee = 0.0
+            if stock.endswith('.SH'):  # 上海股票
+                transfer_fee = max(sell_value * 0.00002, 1.0)
             
             # 计算市场冲击成本：基于订单大小的非线性成本
-            # 市场冲击成本公式：冲击成本率 = 0.1% * sqrt(订单金额/100万)
-            market_impact_rate = 0.001 * np.sqrt(sell_value / 1000000)
+            # 市场冲击成本公式：冲击成本率 = 0.1% * sqrt(订单金额/100万) * (1 - execution_rate)
+            market_impact_rate = 0.001 * np.sqrt(sell_value / 1000000) * (2 - execution_rate)
             market_impact_cost = sell_value * market_impact_rate
             
-            total_revenue = sell_value - commission - market_impact_cost
+            total_revenue = sell_value - commission - stamp_duty - transfer_fee - market_impact_cost
+            
+            # 如果实际成交数量为0，返回None（委托未成交）
+            if actual_quantity <= 0:
+                logger.warning(f"{date} {stock} 卖出委托未成交：下单{quantity}股，实际成交{actual_quantity}股")
+                return None
             
             # 计算盈亏
-            cost = holding['buy_price'] * quantity
+            cost = holding['buy_price'] * actual_quantity
             pnl = total_revenue - cost
             
             # 更新资金
@@ -575,27 +784,47 @@ class Backtester:
                 'sell_date': date,
                 'buy_price': holding['buy_price'],
                 'sell_price': actual_price,
-                'quantity': quantity,
+                'quantity': actual_quantity,
+                'order_quantity': quantity,
+                'execution_rate': execution_rate,
                 'pnl': pnl,
-                'return_rate': (actual_price - holding['buy_price']) / holding['buy_price']
+                'return_rate': (actual_price - holding['buy_price']) / holding['buy_price'],
+                'commission': commission,
+                'stamp_duty': stamp_duty,
+                'transfer_fee': transfer_fee,
+                'market_impact_cost': market_impact_cost
             }
             self.trade_records.append(trade_record)
+            
+            # 更新或删除持仓
+            if actual_quantity < holding['quantity']:
+                # 部分卖出，更新持仓数量
+                self.holdings[stock]['quantity'] -= actual_quantity
+                self.holdings[stock]['update_time'] = date
+            else:
+                # 全部卖出，删除持仓记录
+                del self.holdings[stock]
             
             # 记录交易结果
             trade_result = {
                 'stock': stock,
                 'action': 'sell',
                 'price': actual_price,
-                'quantity': quantity,
+                'quantity': actual_quantity,
+                'order_quantity': quantity,  # 原始下单数量
+                'execution_rate': execution_rate,  # 成交率
+                'order_type': order_type,  # 订单类型
+                'order_time': order_time,  # 下单时间
                 'total_revenue': total_revenue,
+                'commission': commission,
+                'stamp_duty': stamp_duty,
+                'transfer_fee': transfer_fee,
+                'market_impact_cost': market_impact_cost,
                 'pnl': pnl,
                 'time': pd.Timestamp(date)
             }
             
-            # 删除持仓
-            del self.holdings[stock]
-            
-            logger.info(f"{date} 卖出 {stock}，价格：{actual_price:.2f}，数量：{quantity}，收入：{total_revenue:.2f}，盈亏：{pnl:.2f}")
+            logger.info(f"{date} 卖出 {stock}，价格：{actual_price:.2f}，数量：{actual_quantity}/{quantity}，成交率：{execution_rate:.1%}，收入：{total_revenue:.2f}，盈亏：{pnl:.2f}")
             return trade_result
             
         except Exception as e:
@@ -660,18 +889,16 @@ class Backtester:
             self.backtest_results['annual_volatility'] = annual_volatility
         
         # 计算Calmar比率
-        if self.backtest_results.get('annual_return', 0) != 0 and self.backtest_results.get('max_drawdown', 0) != 0:
-            calmar_ratio = self.backtest_results['annual_return'] / abs(self.backtest_results['max_drawdown'])
+        if self.daily_returns:
+            returns_series = pd.Series(self.daily_returns)
+            calmar_ratio = calculate_calmar_ratio(returns_series)
             self.backtest_results['calmar_ratio'] = calmar_ratio
         
         # 计算Sortino比率
         if self.daily_returns:
-            negative_returns = [r for r in self.daily_returns if r < 0]
-            if negative_returns:
-                downside_volatility = np.std(negative_returns)
-                if downside_volatility > 0:
-                    sortino_ratio = self.backtest_results.get('annual_return', 0) / (downside_volatility * np.sqrt(252))
-                    self.backtest_results['sortino_ratio'] = sortino_ratio
+            returns_series = pd.Series(self.daily_returns)
+            sortino_ratio = calculate_sortino_ratio(returns_series)
+            self.backtest_results['sortino_ratio'] = sortino_ratio
         
         # 计算交易统计指标
         self.backtest_results['trade_count'] = len(self.trade_records)
@@ -686,15 +913,12 @@ class Backtester:
             self.backtest_results['break_even_trades'] = len(break_even_trades)
             
             # 计算胜率
-            win_rate = len(profit_trades) / len(self.trade_records)
+            win_rate = calculate_win_rate(self.trade_records)
             self.backtest_results['win_rate'] = win_rate
             
             # 计算盈亏比
-            if loss_trades:
-                avg_profit = sum(trade['pnl'] for trade in profit_trades) / len(profit_trades) if profit_trades else 0
-                avg_loss = abs(sum(trade['pnl'] for trade in loss_trades) / len(loss_trades)) if loss_trades else 1
-                profit_loss_ratio = avg_profit / avg_loss if avg_loss > 0 else 0
-                self.backtest_results['profit_loss_ratio'] = profit_loss_ratio
+            profit_loss_ratio = calculate_profit_loss_ratio(self.trade_records)
+            self.backtest_results['profit_loss_ratio'] = profit_loss_ratio
             
             # 计算总盈亏
             total_pnl = sum(trade['pnl'] for trade in self.trade_records)
@@ -705,30 +929,13 @@ class Backtester:
             self.backtest_results['avg_pnl_per_trade'] = avg_pnl_per_trade
             
             # 计算最大连续盈利/亏损
-            if self.trade_records:
-                consecutive_wins = 0
-                max_consecutive_wins = 0
-                consecutive_losses = 0
-                max_consecutive_losses = 0
-                
-                for trade in self.trade_records:
-                    if trade['pnl'] > 0:
-                        consecutive_wins += 1
-                        consecutive_losses = 0
-                        if consecutive_wins > max_consecutive_wins:
-                            max_consecutive_wins = consecutive_wins
-                    elif trade['pnl'] < 0:
-                        consecutive_losses += 1
-                        consecutive_wins = 0
-                        if consecutive_losses > max_consecutive_losses:
-                            max_consecutive_losses = consecutive_losses
-                
-                self.backtest_results['max_consecutive_wins'] = max_consecutive_wins
-                self.backtest_results['max_consecutive_losses'] = max_consecutive_losses
+            max_consecutive_wins = calculate_max_consecutive_wins(self.trade_records)
+            max_consecutive_losses = calculate_max_consecutive_losses(self.trade_records)
+            self.backtest_results['max_consecutive_wins'] = max_consecutive_wins
+            self.backtest_results['max_consecutive_losses'] = max_consecutive_losses
             
             # 计算平均持仓天数
-            holding_days = [pd.Timestamp(trade['sell_date']) - pd.Timestamp(trade['buy_date']) for trade in self.trade_records]
-            avg_holding_days = np.mean([hd.days for hd in holding_days]) if holding_days else 0
+            avg_holding_days = calculate_avg_holding_days(self.trade_records)
             self.backtest_results['avg_holding_days'] = avg_holding_days
             
             # 计算每日平均交易次数
@@ -736,8 +943,42 @@ class Backtester:
                 avg_daily_trades = len(self.trade_records) / n_days
                 self.backtest_results['avg_daily_trades'] = avg_daily_trades
             
+            # 添加收益率分布分析
+            if self.daily_returns:
+                returns_series = pd.Series(self.daily_returns)
+                self.backtest_results['returns_skewness'] = returns_series.skew()
+                self.backtest_results['returns_kurtosis'] = returns_series.kurtosis()
+                self.backtest_results['returns_quantiles'] = {
+                    '25%': returns_series.quantile(0.25),
+                    '50%': returns_series.quantile(0.5),
+                    '75%': returns_series.quantile(0.75),
+                    '95%': returns_series.quantile(0.95),
+                    '99%': returns_series.quantile(0.99)
+                }
+            
             # 行业配置效果分析
             self.backtest_results['industry_analysis'] = self._analyze_industry_allocation()
+        
+        # 计算额外的风险调整指标
+        if self.daily_returns:
+            returns_series = pd.Series(self.daily_returns)
+            
+            # 假设使用沪深300作为基准，这里生成模拟的基准收益率
+            # 实际使用时应替换为真实的基准收益率数据
+            benchmark_returns = np.random.normal(0.0005, 0.01, len(self.daily_returns))
+            benchmark_returns_series = pd.Series(benchmark_returns)
+            
+            # 计算信息比率
+            information_ratio = calculate_information_ratio(returns_series, benchmark_returns_series)
+            self.backtest_results['information_ratio'] = information_ratio
+            
+            # 计算贝塔系数
+            beta = calculate_beta(returns_series, benchmark_returns_series)
+            self.backtest_results['beta'] = beta
+            
+            # 计算阿尔法系数
+            alpha = calculate_alpha(returns_series, benchmark_returns_series)
+            self.backtest_results['alpha'] = alpha
     
     def _analyze_industry_allocation(self):
         """

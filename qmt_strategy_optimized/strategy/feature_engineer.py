@@ -275,6 +275,27 @@ class FeatureEngineer:
                 bid_features['bid_volume_to_day_ratio'] = data['bid_volume_925'] / (data['volume'].shift(-1) + 1e-6)
             else:
                 bid_features['bid_volume_to_day_ratio'] = 0.0
+            
+            # 新增：多日竞价数据趋势特征
+            if 'bid_intensity' in bid_features.columns:
+                # 竞价强度5日趋势
+                bid_features['bid_intensity_trend_5d'] = bid_features['bid_intensity'].rolling(5).mean()
+                # 竞价强度5日变化率
+                bid_features['bid_intensity_change_5d'] = bid_features['bid_intensity'].pct_change(5).fillna(0)
+                # 竞价强度10日趋势
+                bid_features['bid_intensity_trend_10d'] = bid_features['bid_intensity'].rolling(10).mean()
+            
+            if 'bid_volume_ratio' in bid_features.columns:
+                # 竞价量比5日趋势
+                bid_features['bid_volume_ratio_trend_5d'] = bid_features['bid_volume_ratio'].rolling(5).mean()
+                # 竞价量比5日变化率
+                bid_features['bid_volume_ratio_change_5d'] = bid_features['bid_volume_ratio'].pct_change(5).fillna(0)
+            
+            if 'bid_price_change' in bid_features.columns:
+                # 竞价价格变化5日趋势
+                bid_features['bid_price_change_trend_5d'] = bid_features['bid_price_change'].rolling(5).mean()
+                # 竞价价格变化5日标准差
+                bid_features['bid_price_change_std_5d'] = bid_features['bid_price_change'].rolling(5).std()
         
         return bid_features
     
@@ -288,14 +309,32 @@ class FeatureEngineer:
             # 板块涨幅
             if 'sector_change' in data.columns:
                 sector_features['sector_change'] = data['sector_change']
+                # 板块涨幅5日趋势
+                sector_features['sector_change_trend_5d'] = data['sector_change'].rolling(5).mean()
+                # 板块涨幅10日趋势
+                sector_features['sector_change_trend_10d'] = data['sector_change'].rolling(10).mean()
+                # 板块涨幅变化率
+                sector_features['sector_change_change'] = data['sector_change'].pct_change().fillna(0)
+                # 板块涨幅5日变化率
+                sector_features['sector_change_change_5d'] = data['sector_change'].pct_change(5).fillna(0)
             else:
                 sector_features['sector_change'] = 0.0
+                sector_features['sector_change_trend_5d'] = 0.0
+                sector_features['sector_change_trend_10d'] = 0.0
+                sector_features['sector_change_change'] = 0.0
+                sector_features['sector_change_change_5d'] = 0.0
             
             # 板块资金流入量
             if 'sector_money_flow' in data.columns:
                 sector_features['sector_money_flow'] = data['sector_money_flow']
+                # 板块资金流入5日趋势
+                sector_features['sector_money_flow_trend_5d'] = data['sector_money_flow'].rolling(5).mean()
+                # 板块资金流入变化率
+                sector_features['sector_money_flow_change'] = data['sector_money_flow'].pct_change().fillna(0)
             else:
                 sector_features['sector_money_flow'] = 0.0
+                sector_features['sector_money_flow_trend_5d'] = 0.0
+                sector_features['sector_money_flow_change'] = 0.0
             
             # 板块涨跌幅排名
             if 'sector_rank' in data.columns:
@@ -306,8 +345,31 @@ class FeatureEngineer:
             # 板块内涨停家数
             if 'sector_limit_up_count' in data.columns:
                 sector_features['sector_limit_up_count'] = data['sector_limit_up_count']
+                # 板块内涨停家数5日趋势
+                sector_features['sector_limit_up_count_trend_5d'] = data['sector_limit_up_count'].rolling(5).mean()
+                # 板块内涨停家数变化率
+                sector_features['sector_limit_up_count_change'] = data['sector_limit_up_count'].pct_change().fillna(0)
             else:
                 sector_features['sector_limit_up_count'] = 0.0
+                sector_features['sector_limit_up_count_trend_5d'] = 0.0
+                sector_features['sector_limit_up_count_change'] = 0.0
+            
+            # 板块联动特征
+            # 板块与大盘的相关性
+            if 'index_change' in data.columns:
+                # 计算板块与大盘的5日相关性
+                sector_features['sector_index_correlation_5d'] = data['sector_change'].rolling(5).corr(data['index_change'].rolling(5))
+            
+            # 板块热度变化率
+            if 'sector_hotness' in data.columns:
+                sector_features['sector_hotness'] = data['sector_hotness']
+                sector_features['sector_hotness_change'] = data['sector_hotness'].pct_change().fillna(0)
+                sector_features['sector_hotness_trend_5d'] = data['sector_hotness'].rolling(5).mean()
+            
+            # 板块内股票平均涨跌幅
+            if 'sector_avg_return' in data.columns:
+                sector_features['sector_avg_return'] = data['sector_avg_return']
+                sector_features['sector_avg_return_trend_5d'] = data['sector_avg_return'].rolling(5).mean()
         
         return sector_features
     
@@ -952,9 +1014,84 @@ class FeatureEngineer:
                 # 价格波动率
                 if len(data) >= 5:
                     technical_features['price_volatility_5d'] = data['close'].rolling(5).std() / data['close'].rolling(5).mean()
+            
+            # 11. 涨停相关特征
+            if 'close' in data.columns and 'prev_close' in data.columns:
+                # 计算每日涨跌幅
+                data['daily_return'] = (data['close'] - data['prev_close']) / data['prev_close']
+                
+                # 涨停阈值（9.8%）
+                limit_up_threshold = 0.098
+                
+                # 判断当日是否涨停
+                data['is_limit_up'] = (data['daily_return'] >= limit_up_threshold).astype(int)
+                
+                # 11.1 前N日涨停频率与强度
+                # 前5日涨停次数
+                technical_features['limit_up_count_5d'] = data['is_limit_up'].rolling(5).sum()
+                # 前10日涨停次数
+                technical_features['limit_up_count_10d'] = data['is_limit_up'].rolling(10).sum()
+                # 前20日涨停次数
+                technical_features['limit_up_count_20d'] = data['is_limit_up'].rolling(20).sum()
+                
+                # 11.2 连续涨停特征
+                # 连续涨停天数
+                def count_consecutive_limit_up(x):
+                    count = 0
+                    for i in reversed(x):
+                        if i == 1:
+                            count += 1
+                        else:
+                            break
+                    return count
+                
+                technical_features['consecutive_limit_up'] = data['is_limit_up'].rolling(10).apply(count_consecutive_limit_up, raw=True)
+                
+                # 11.3 涨停基因（历史涨停次数）
+                technical_features['total_limit_up_count'] = data['is_limit_up'].cumsum()
+                
+                # 11.4 前一天是否涨停
+                technical_features['prev_day_limit_up'] = data['is_limit_up'].shift(1)
+                
+                # 11.5 涨停强度
+                technical_features['limit_up_strength'] = data['daily_return'].where(data['is_limit_up'] == 1, 0)
+                
+                # 11.6 涨停后表现
+                # 涨停次日涨跌幅
+                technical_features['after_limit_up_return'] = data['daily_return'].shift(-1).where(data['is_limit_up'] == 1, 0)
+            
+            # 12. 板块涨停特征
+            # 板块涨停密度（假设data中包含板块涨停股票数量）
+            if 'sector_limit_up_count' in data.columns and 'sector_stock_count' in data.columns:
+                technical_features['sector_limit_up_density'] = data['sector_limit_up_count'] / data['sector_stock_count']
+            
+            # 13. 资金流向特征
+            # 主力资金流入比例（假设data中包含主力资金流入数据）
+            if 'main_capital_inflow' in data.columns and 'volume' in data.columns:
+                technical_features['main_capital_ratio'] = data['main_capital_inflow'] / data['volume']
+                
+            # 14. 龙虎榜特征
+            # 龙虎榜资金流入（假设data中包含龙虎榜数据）
+            if 'dragon_tiger_inflow' in data.columns:
+                technical_features['dragon_tiger_inflow'] = data['dragon_tiger_inflow']
+                technical_features['dragon_tiger_inflow_ratio'] = data['dragon_tiger_inflow'] / data['volume']
+            
+            # 15. 盘口委托队列特征
+            # 买卖盘委托比（假设data中包含盘口数据）
+            if 'buy_order_volume' in data.columns and 'sell_order_volume' in data.columns:
+                technical_features['order_volume_ratio'] = data['buy_order_volume'] / (data['sell_order_volume'] + 1e-6)
+            
+            # 16. 涨停延续性特征
+            # 近3日涨停连续性
+            if 'is_limit_up' in data.columns:
+                technical_features['limit_up_continuity_3d'] = (data['is_limit_up'] + data['is_limit_up'].shift(1) + data['is_limit_up'].shift(2)).rolling(3).sum() / 3
+            
+            # 17. 价格波动率扩展
+            if 'close' in data.columns:
+                # 10日价格波动率
+                if len(data) >= 10:
                     technical_features['price_volatility_10d'] = data['close'].rolling(10).std() / data['close'].rolling(10).mean()
                 else:
-                    technical_features['price_volatility_5d'] = 0.0
                     technical_features['price_volatility_10d'] = 0.0
         
         return technical_features

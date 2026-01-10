@@ -8,8 +8,8 @@
 RUN_MODE = "backtest"
 
 # 回测配置
-BACKTEST_START_DATE = "20251001"
-BACKTEST_END_DATE = "20251031"
+BACKTEST_START_DATE = "20250901"
+BACKTEST_END_DATE = "20250930"
 
 # 实盘配置
 LOOP_INTERVAL = 60  # 循环间隔，单位：秒
@@ -40,9 +40,9 @@ BUY_ORDER_SIZE_WEIGHT = 0.3  # 封单量权重
 MARKET_SENTIMENT_WEIGHT = 0.4  # 市场情绪权重
 
 # 自适应卖点策略参数
-PROFIT_TARGET = 0.05  # 降低目标收益率，更容易止盈
-STOP_LOSS_RATIO = 0.03  # 降低止损比例，更宽松的止损条件
-TRAILING_STOP_RATIO = 0.02  # 降低跟踪止损比例，更宽松的跟踪止损条件
+PROFIT_TARGET = 0.10  # 适当提高目标收益率，平衡风险和收益
+STOP_LOSS_RATIO = 0.04  # 适当放宽止损比例，允许合理波动
+TRAILING_STOP_RATIO = 0.05  # 适当放宽跟踪止损比例，保护利润
 
 # 风险控制配置
 MAX_POSITION_PER_STOCK = 0.2  # 单票最大仓位比例
